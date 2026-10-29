@@ -1,0 +1,83 @@
+# Single source of truth for /apply. Built from inputs\FP&A_Resume_--_Shreyas_Kukanur (1).pdf and inputs\Profile (4).pdf.
+# /apply may reword, reorder and select from `bank`, and may mirror JD keywords only where a bank line supports them.
+# It may not add a job, title, date, degree, certification, tool or number that is not here.
+# Edit this file when your resume changes; the PDFs are generated from it.
+
+contact:
+  name: Shreyas Kukanur
+  phone: "+1 (925) 872-2509"
+  location: "San Jose, CA"                  # all application materials use this location
+  linkedin: linkedin.com/in/shreyaskukanur
+  email: shreyas.kukanur@gmail.com
+
+# Fixed skeleton. Names, titles, dates, places are printed exactly as written here.
+jobs:
+  - id: boeing
+    company: Boeing
+    title: Estimating and Pricing Specialist
+    dates: June 2025 - Present
+    location: "St. Louis County, MO"
+    bank:
+      - "Present pricing and labor-cost breakdowns to Program Management and Contracts leadership for sign-off on business proposals ranging $2K-$50M, covering new program launches, recurring program support, and one-time procurement across missile, tanker, bomber, and executive transport product lines."
+      - "Serve as first-line quality control reviewing ~$1B in cumulative proposal value, catching cost & pricing errors before submittal."
+      - "Negotiate alongside contracts and program directly with the customer on proposed labor hours, developing counteroffers and minimum-price positions to defend program pricing."
+      - "Build and defend cost proposals using structured pricing models, including time-and-materials and fully burdened labor rates, in front of Program Managers, Contracts, and the Engineering Review Board."
+      - "Author financial assumptions and variance analysis documentation that passes formal external audit and internal peer review, meeting strict federal cost-accounting compliance standards (FAR/CAS)."
+      - "Partner with Engineering, Supply Chain, and Program Management to consolidate fragmented data into unified financial models using Excel (XLOOKUP, Pivot Tables, Power Query, VBA), improving forecast accuracy and turnaround time."
+      - "Build and defend cost forecasts and pricing models totaling $500M+, running best/worst-case scenario and sensitivity analysis on cost, risk, and schedule drivers to inform leadership pricing decisions."
+      - "Identify which assumptions drive program outcomes through variance and competitive analysis, documenting the reasoning so leadership can act on it."
+      - "Translate technical requirements from Engineering and Supply Chain into financial assumptions across multiple concurrent proposals."
+      - "Introduced AI-assisted workflows for data entry, drafting, and documentation review, speeding proposal turnaround and checking estimate language for consistency with U.S. government and company requirements."
+      - "Trained and onboarded 3 analysts on modeling tools and process."
+  - id: fintax
+    company: Fintax
+    title: Management Consulting Intern
+    dates: August 2024 - December 2024
+    location: "San Jose, CA"
+    bank:
+      - "Built a driver-based financial model (forecasted income statement) for real-time scenario/sensitivity analysis on pricing, ad spend, and acquisition assumptions; developed a turnaround strategy that generated 15% YoY revenue growth with a 25% profit margin."
+      - "Designed and pitched an inorganic growth strategy recommending joint ventures, acquisitions of books of business, and leveraged buyout (LBO) structures."
+      - "Created an automated financial model that let the CEO input key metrics into a forecasted income statement for dynamic scenario analysis of pricing, advertising spend, and acquisition plans."
+      - "Directed and delegated tasks within a consulting team to streamline project execution and deliver growth strategies."
+  - id: forrest
+    company: Forrest Systems
+    title: Junior Analyst - Financial Analyst Intern
+    dates: August 2024 - December 2024
+    location: "San Jose, CA"
+    bank:
+      - "Led a 5-person team through valuation and financial statement analysis for Ross Stores, Hershey, and Dolby Laboratories, culminating in a DCF-based investment thesis for the CFA Research Challenge that produced a 46% upside."
+      - "Automated Excel-based forecasting and budgeting models to improve stock selection and valuation confidence; the models improved forecast accuracy by 20% through driver-based modeling and data analysis."
+      - "Pitched buy recommendations for Ross Stores (ROST), Hershey (HSY), and Dolby Laboratories (DLB), securing approval from faculty advisors for portfolio inclusion."
+      - "Taught Discounted Cash Flow (DCF) valuation to teammates."
+
+education:
+  - school: Johns Hopkins University
+    degree: Master of Science (MS), Computer Science
+    dates: January 2026 - June 2028            # in progress; never write it as completed
+    note: "Relevant coursework: Data Structures, Object-Oriented Programming (Java), Python, and Computer Architecture"
+  - school: San Jose State University
+    degree: Bachelor of Science (BS), Finance
+    dates: August 2021 - December 2024
+    note: "GPA: 3.88"
+
+# Skills the resume supports. Group names are printed as headings.
+skills:
+  "FP&A": [Forecasting, Budgeting, Variance Analysis, Driver-Based Modeling, Scenario/Sensitivity Analysis, Long-Range Strategic Planning, Capex Planning, ROI Analysis, Root-Cause Analysis, Valuation (DCF/Comps), APM, accounting analysis, corporate finance, financial planning, transaction advisory, pricing and cost estimating]
+  Tools: [Excel (XLOOKUP, Pivot Tables, Power Query, VBA), SQL, Python, Power BI, ERP, PowerPoint]
+  Business: [Cross-Functional Business Partnering, U.S. GAAP, Cost Accounting, Month-End/Quarter-End Close, Stakeholder Management, Storytelling with Data, FAR/CAS compliance]
+
+# Things the materials must never claim.
+never_claim:
+  - CFA
+  - CPA
+  - Series 7
+  - Series 63
+  - Series 65
+  - Series 66
+  - Series 79
+  - Series 86
+  - Series 87
+  - SIE
+  - MBA
+  - "Master's degree completed"
+  - security clearance

@@ -1,0 +1,70 @@
+# Hard filters and metro map for board/filters.py. Rules mirror CLAUDE.md.
+# Anything ambiguous is flagged, never hidden.
+
+posting_max_age_days: 4
+
+max_years_required: 3          # hide when the REQUIRED minimum is above this
+min_confidence_to_hide: medium # low | medium | high. Years/degree evidence below this only flags.
+
+# Titles to hide. Case-insensitive regexes.
+hide_title_patterns:
+  - 'director'
+  - 'manager'
+  - 'vice president'
+  - '\bvp\b'
+  - '\bintern(s|ship)?\b'
+# Titles to flag (kept, not hidden).
+flag_title_patterns:
+  - '\bsenior\b'
+  - '\bsr\.?\b'
+  - '\blead\b'
+  - '\bprincipal\b'
+  - '\bstaff\b'
+  - '\bassociate\b'            # at banks usually post-MBA; the years/degree rules decide
+
+# Quant: title match hides. JD match hides only for the strong phrases.
+quant_title_patterns: ['\bquant', 'quantitative (research|trad|develop|analyst|strateg)']
+quant_jd_strong_patterns:
+  - 'quantitative (researcher|trader|developer|strategist)'
+  - '\bquant (researcher|trader|developer|analyst)'
+  - 'systematic trading'
+  - 'alpha research'
+  - 'stochastic calculus'
+quant_jd_flag_patterns: ['quantitative (research|modeling|modelling|finance|strateg|analyst)']
+
+# Location strings that carry no city. Shown with a "location unknown" flag.
+generic_location_patterns:
+  - '^\s*$'
+  - '^(united states|usa|u\.s\.a?\.?|us)\s*$'
+  - 'multiple locations?'
+  - 'various'
+  - '^n/?a$'
+  - 'flexible'
+  - 'anywhere'
+
+# Metro map. A job passes the metro rule when its location text contains any city token.
+metros:
+  bay_area:
+    label: Bay Area
+    cities: [San Jose, San Francisco, Oakland, Palo Alto, Mountain View, Sunnyvale, Santa Clara, Cupertino, Menlo Park, Redwood City, San Mateo, Fremont, Berkeley, Milpitas, Pleasanton, Foster City, South San Francisco, San Bruno, Los Gatos, Campbell, San Carlos, Burlingame, Emeryville, Walnut Creek, Los Altos, Bay Area]
+  seattle:
+    label: Seattle
+    cities: [Seattle, Bellevue, Redmond, Kirkland]
+  austin:
+    label: Austin
+    cities: [Austin, Round Rock]
+  chicago:
+    label: Chicago
+    cities: [Chicago]
+  new_york:
+    label: New York
+    cities: [New York, NYC, Manhattan, Brooklyn]
+  boston:
+    label: Boston
+    cities: [Boston, "Cambridge, MA", Waltham]
+  miami:
+    label: Miami
+    cities: [Miami]
+  hawaii:
+    label: Hawaii
+    cities: [Honolulu, Hawaii]

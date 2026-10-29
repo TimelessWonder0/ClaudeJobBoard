@@ -1,0 +1,102 @@
+# Score weights for board/score.py. Edit freely; no code change needed.
+# Each component yields 0..1, multiplied by its weight. Weights are points and should sum to 100
+# (the code normalizes if they do not).
+
+weights:
+  title_track: 25     # how close the title is to your target tracks
+  years_fit: 20       # required years vs your ~1.5 years
+  skill_overlap: 25   # resume skills found in the job description
+  metro: 10           # where the job is (Bay Area highest)
+  company_priority: 10
+  freshness: 10
+
+# Your experience, used by years_fit.
+candidate:
+  years_experience: 1.5
+
+# --- title_track -------------------------------------------------------------------------------
+# First matching tier wins. Case-insensitive regexes on the title.
+title_tiers:
+  - {score: 1.00, name: core,    patterns: ['financial analyst', 'finance analyst', 'fp&a', 'financial planning', 'pricing analyst', 'deal desk', 'equity research (associate|analyst)', 'associate equity analyst']}
+  - {score: 0.80, name: close,   patterns: ['business finance', 'product finance', 'strategic finance', 'corporate finance', 'finance associate', 'revenue analyst', 'cost analyst', 'pricing finance', 'deal finance']}
+  - {score: 0.60, name: related, patterns: ['investment analyst', 'research associate', 'equity analyst', 'finance (rotation|development)', 'financial (rotation|development)']}
+title_default: 0.30          # title passed career-ops but matches no tier
+# Titles that match a keyword above but are another job (sales, data, engineering...). Capped at title_offtrack_score.
+title_offtrack_patterns: ['account executive', 'sales', 'engineer', 'recruit', 'marketing', 'designer', 'product manager', 'counsel', 'legal', 'business intelligence', 'data scientist']
+title_offtrack_score: 0.20
+title_senior_penalty: 0.15   # subtracted when the title says Senior/Lead/Principal/Staff
+
+# --- years_fit ---------------------------------------------------------------------------------
+# Piecewise by required years (use years_bachelors when a JD lists degree routes, since you hold a BS).
+years_table:
+  - {max_years: 0,  score: 1.00}
+  - {max_years: 1,  score: 1.00}
+  - {max_years: 2,  score: 0.95}
+  - {max_years: 3,  score: 0.65}
+  - {max_years: 4,  score: 0.30}
+  - {max_years: 99, score: 0.10}
+years_unknown: 0.70          # JD states no years, or JD could not be read
+years_low_confidence_blend: 0.5   # low-confidence years: average of the table score and years_unknown
+
+# --- skill_overlap -----------------------------------------------------------------------------
+# Each group counts once if any term appears in the JD. Score = matched weight / total weight,
+# then lifted by skill_saturation (matching this share of the total already counts as 1.0).
+skill_saturation: 0.60
+skills:
+  - {name: forecasting,           weight: 1.0, terms: ['forecast', 'budgeting', 'long[- ]range plan', 'lrp', 'annual operating plan']}
+  - {name: pricing,               weight: 1.0, terms: ['pricing', 'deal desk', 'cost estimat', 'cost proposal', 'rate model', 'unit economics']}
+  - {name: variance_scenario,     weight: 1.0, terms: ['variance', 'scenario', 'sensitivity', 'bridge analysis', 'flux']}
+  - {name: excel_vba,             weight: 1.0, terms: ['excel', 'vba', 'power query', 'pivot', 'xlookup', 'macros']}
+  - {name: sql,                   weight: 0.8, terms: ['\bsql\b']}
+  - {name: python,                weight: 0.6, terms: ['\bpython\b']}
+  - {name: dcf_valuation,         weight: 0.8, terms: ['\bdcf\b', 'discounted cash flow', 'valuation', 'comps\b', 'comparable compan']}
+  - {name: pnl,                   weight: 1.0, terms: ['p&l', 'p & l', 'profit and loss', 'income statement', 'margin analysis', 'financial statements']}
+  - {name: modeling,              weight: 0.8, terms: ['financial model', 'driver[- ]based', 'three[- ]statement', '3[- ]statement']}
+  - {name: bi_tools,              weight: 0.4, terms: ['power bi', 'tableau', 'looker']}
+  - {name: stakeholder_partnering, weight: 0.4, terms: ['business partner', 'cross[- ]functional', 'stakeholder']}
+
+# --- metro -------------------------------------------------------------------------------------
+metro_scores:
+  bay_area: 1.00
+  seattle: 0.85
+  new_york: 0.80
+  austin: 0.75
+  chicago: 0.75
+  boston: 0.70
+  miami: 0.55
+  hawaii: 0.55
+metro_unknown: 0.40
+
+# --- company_priority --------------------------------------------------------------------------
+company_priority_scores: {1: 1.00, 2: 0.65, 3: 0.35}
+company_unknown: 0.50
+
+# --- freshness ---------------------------------------------------------------------------------
+# days since posted -> score. Linear from 0 days (1.0) to the window edge (floor).
+freshness_floor: 0.20
+freshness_approx_multiplier: 0.90   # applied when the date is approximate (first_seen used)
+
+# --- flat point adjustments (after weighting) --------------------------------------------------
+adjustments:
+  jd_not_fetched: -5
+  location_unknown: -3
+  degree_masters_preferred: 0
+  cert_required: -8          # CFA/Series/CPA required (you hold none)
+  cert_obtainable: 0
+
+# --- company aliases ---------------------------------------------------------------------------
+# Substring (case/punctuation-insensitive) in the scan-history portal/company -> name in companies.yaml.
+company_aliases:
+  youtube: Google
+  deepmind: Google
+  "amazon.com services": Amazon
+  "amazon web services": Amazon
+  fmr: Fidelity
+
+# --- tracks (Board "Track" column), first match wins -------------------------------------------
+tracks:
+  - {name: Equity Research,   patterns: ['equity research', 'equity analyst', 'research associate', 'investment analyst']}
+  - {name: Pricing,           patterns: ['pricing', 'deals? desk', 'revenue analyst', 'cost analyst', 'deal finance']}
+  - {name: FP&A,              patterns: ['fp&a', 'fpa\b', 'financial planning', 'strategic finance', 'business finance', 'product finance', 'corporate finance']}
+  - {name: Financial Analyst, patterns: ['financial analyst', 'finance analyst', 'finance associate', 'finance rotation', 'financial rotation']}
+track_default: Financial Analyst

@@ -1,0 +1,62 @@
+"""Shared dataclasses."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+
+
+@dataclass
+class HistoryRow:
+    url: str = ""
+    first_seen: str = ""
+    portal: str = ""
+    title: str = ""
+    company: str = ""
+    status: str = ""
+    location: str = ""
+    fingerprint: str = ""
+    posted_at: str = ""
+    trust_score: str = ""
+    trust_flags: str = ""
+    normalized_company: str = ""
+    requisition_id: str = ""
+    language: str = ""
+    listing_key: str = ""
+
+
+@dataclass
+class Reason:
+    rule: str            # e.g. "years_required", "degree_required", "title", "metro", "remote", "quant", "age"
+    text: str            # human-readable reason
+    evidence: str = ""   # sentence it came from
+
+
+@dataclass
+class Job:
+    id: str
+    row: HistoryRow
+    company: str
+    title: str
+    location: str
+    url: str
+    portal: str
+    date_used: date | None
+    date_approx: bool
+    age_days: int | None
+    jd_text: str = ""
+    jd_source: str = ""          # fetch-jd | html | cache | none
+    jd_dir: Path | None = None
+    extraction: dict = field(default_factory=dict)
+    metro: str = ""              # key from filters.yaml, "" when none
+    metro_status: str = "unknown"  # match | outside | unknown
+    work_mode: str = "unknown"
+    company_priority: int | None = None
+    reasons: list[Reason] = field(default_factory=list)   # hard-filter hits; non-empty means hidden
+    flags: list[str] = field(default_factory=list)
+    score: float | None = None
+    score_parts: dict = field(default_factory=dict)
+
+    @property
+    def hidden(self) -> bool:
+        return bool(self.reasons)

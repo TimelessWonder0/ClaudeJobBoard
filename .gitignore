@@ -1,0 +1,12 @@
+career-ops/
+career-ops-data/
+output/
+state/
+board_output/
+.cache/
+__pycache__/
+.venv/
+.env
+jobs/
+applications/
+logs/
