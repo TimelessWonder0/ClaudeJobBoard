@@ -195,7 +195,7 @@ def test_scan_receipt_fills_run_log_and_check_manually_lists_unscannable(dirs, t
     assert lrow["Companies Scanned"] == 49 and "Foo (HTTP 500)" in lrow["Boards Errored"]
     manual = wb["Check Manually"]
     names = {manual.cell(row=r, column=1).value for r in range(2, manual.max_row + 1)}
-    assert {"Meta", "Goldman Sachs", "OpenAI"} <= names
+    assert {"Meta", "Goldman Sachs", "Intuit"} <= names
     assert manual.cell(row=2, column=6).hyperlink is not None
 
 
