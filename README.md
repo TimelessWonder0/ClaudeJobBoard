@@ -1,6 +1,6 @@
 # ClaudeJobBoard
 
-A personal job board for finance roles. One command scans 49 career sites for the companies in `config/companies.yaml`, keeps the roles posted in the last 4 days that fit (Financial Analyst, FP&A, Pricing, Equity Research; 0 to 3 years; 8 metros; on-site or hybrid), scores them against a resume, and writes an Excel board you can sort and mark. When you pick a role, it builds a tailored one-page resume and cover letter as PDFs.
+A personal job board for finance roles. One command scans 49 career sites for the companies in `config/companies.yaml`, keeps the roles posted in the last 3 days that a Bachelor's-only candidate with about 1.5 years can get (finance and finance-adjacent; up to 2 years required; 8 metros; on-site or hybrid), scores them against a resume, and writes an Excel board you can sort and mark. When you pick a role, it builds a tailored one-page resume and cover letter as PDFs.
 
 It never submits an application and never contacts anyone. You decide and send.
 
@@ -19,13 +19,13 @@ From any PowerShell window:
 jobboard              # scan, build the board, print a summary, open Excel
 jobboard -Review      # also write "Why it fits" / "Gaps" for the top 25 (uses Claude Code)
 jobboard -NoOpen      # do not open Excel
-jobboard -Days 7      # scan window in days (default 4)
+jobboard -Days 7      # scan window in days (default 3)
 jobboard -SkipScan    # rebuild the board from the last scan
 ```
 
 Or double-click `jobboard.cmd`. From Claude Code, `/scan` runs the same script.
 
-Steps, in order: (1) `node scan.mjs --since 4 --json` in `career-ops\`, receipt to `logs\<date>_scan.json`; (2) `python -m board run`; (3) `claude -p "/review"` with `-Review`; (4) summary: companies scanned, boards that errored, roles found / kept / hidden, new since last run; (5) open the master in Excel.
+Steps, in order: (1) `node scan.mjs --since 3 --json` in `career-ops\` (whole boards, about 10 to 20 minutes), receipt to `logs\<date>_scan.json`; (2) `python -m board run`; (3) `claude -p "/review"` with `-Review`; (4) summary: companies scanned, boards that errored, roles found / kept / hidden, new since last run; (5) open the master in Excel.
 
 - Everything is logged to `logs\<date>.log`. If a step fails, the summary names the step and why.
 - If every board fails (no internet, VPN, proxy), the run stops after step 1 with exit code 2 and tells you to check your connection.
@@ -44,9 +44,22 @@ Steps, in order: (1) `node scan.mjs --since 4 --json` in `career-ops\`, receipt 
 
 ## How roles are judged
 
-- **Hidden (reason kept):** quant roles; Master's/MBA required; more than 3 years required; titles with director, manager, VP, intern; outside the 8 metros; fully remote; older than 4 days. Anything ambiguous is shown with a flag instead.
-- **Fit Score 0 to 100:** title track, years vs about 1.5, skill overlap with the resume, metro (Bay Area highest), company priority, freshness. Weights are in `config\scoring.yaml`; rules in `config\filters.yaml`.
+The board does not search for finance words. It pulls every job at every company, then removes what clearly does not fit, cheapest steps first (`config\funnel.yaml`, `config\negative_titles.yaml`). A good posting with an unusual title survives unless a stated rule removes it.
+
+| Step | What happens |
+|---|---|
+| 1 Pull everything | career-ops reads whole boards with no search words and no title or location filter. |
+| 2 Date | Posted within 3 days. Undated postings stay if first seen within 3 days ("date approx"). |
+| 3 Location | Your 8 metros, plus multi-location postings that include one. Fully remote and other places are dropped. |
+| 4 Negative titles | Dropped if the title contains a listed whole word: senior, sr, lead, principal, staff, manager, director, head, vp, president, chief, officer, partner (not "business partner"), III and above, engineer, developer, software, scientist, intern, recruiter, account executive and so on. Edit `config\negative_titles.yaml`. |
+| 5 Finance relevance | Kept if the title (or ATS department) mentions finance, FP&A, planning, corporate development, M&A, strategy, business operations, pricing, deal desk, revenue, treasury, investor relations, investment, equity, research, valuation, capital, credit, risk analyst or commercial analyst. Accounting, audit, tax and payroll go to Hidden as "accounting track". Everything else is classified by Claude (batches of 50, keep or drop; if it cannot answer, the title is kept). |
+| 6 Experience | The JD is fetched only now, for survivors. Required years above 2 are dropped (2 = "stretch", "not stated" = flagged); "Bachelor's + 3 or Master's + 1" counts as 3; career-ops `jd-years.mjs` cross-checks and the higher number wins. Also dropped: MBA, Master's, CPA or CFA required; Series 7/63/65/66 required before hire (licenses sponsored after hire are kept and flagged); a new-grad window that excludes a December 2024 graduate. |
+| 7 Fit | career-ops liveness check drops closed postings; a career-ops evaluation (1-5 score and report, `config\careerops.yaml`) runs on survivors, at most 25 new ones per run; below 3.0 is hidden as "career-ops: low fit". The Board is sorted by career-ops score, then Fit Score. |
+
+- **Nothing disappears.** Every dropped row is on the **Hidden** sheet with its step and reason (and in `output\Dropped_<date>.csv`, which is always complete). The **Funnel** sheet shows counts per company after each step, the scan's totals, and boards that errored. Each run ends by printing 25 random titles dropped at step 4 and 25 at step 5 so you can spot anything wrongly filtered. Rows dropped before the JD stage (steps 2-5) cannot be overridden from Excel; change the config.
+- **Fit Score 0 to 100:** title track, years vs about 1.5 (a low requirement is rewarded, "stretch" costs points), skill overlap with the resume, metro (Bay Area highest), company priority, freshness. Weights are in `config\scoring.yaml`.
 - **Facts only:** application documents are built from `config\candidate.yaml`. Employers, titles, dates, places and degrees are printed by the tool; any number, skill or credential it does not support is rejected before a PDF is written. Review both PDFs before you send them.
+- **Limits worth knowing:** Google lets a scanner read only the first results page; Apple's search needs a term (the scan uses "a"); career-ops does not store ATS departments, so the department test works only where the URL carries one. The first run is slow (whole boards, then a JD per survivor); later runs only touch new postings.
 
 ## Setup (once)
 

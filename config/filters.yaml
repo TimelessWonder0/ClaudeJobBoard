@@ -1,26 +1,71 @@
 # Hard filters and metro map for board/filters.py. Rules mirror CLAUDE.md.
 # Anything ambiguous is flagged, never hidden.
 
-posting_max_age_days: 4
+posting_max_age_days: 3        # keep equal to window_days in funnel.yaml
 
-max_years_required: 3          # hide when the REQUIRED minimum is above this
+# Years of experience. Hide when the minimum REQUIRED years is above this (so 3 or more is hidden).
+# A requirement equal to this number is kept and flagged "stretch". The figure used is the one that applies to
+# you: with "Bachelor's + 3 or Master's + 1" it is 3, because you hold no Master's. Preferred years never hide.
+max_required_years: 2
 min_confidence_to_hide: medium # low | medium | high. Years/degree evidence below this only flags.
 
-# Titles to hide. Case-insensitive regexes.
+# Licenses. Hidden only when required BEFORE hire. Licenses a JD says you can obtain after hire (and any
+# Series 86/87, SIE, 79, which research roles normally sponsor) are kept with a flag.
+hide_licenses_before_hire: ['Series 7', 'Series 63', 'Series 65', 'Series 66']
+# Degrees / credentials that hide a role when REQUIRED (preferred only flags).
+hide_degrees_required: [masters, mba, phd]
+hide_certs_required: [CFA, CPA]
+
+# New-grad programs ("University Graduate", "New Grad", "Early Career") are kept unless the JD's graduation
+# window clearly excludes this graduation date.
+graduation_date: 2024-12-01
+newgrad_title_patterns: ['university graduate', 'new grad', 'early career', 'graduate program', 'campus']
+
+# Senior / managerial titles: HIDDEN. Case-insensitive regexes (the Roman-numeral rule is case-sensitive: III and above).
 hide_title_patterns:
+  - '\bsenior\b'
+  - '\bsr\b\.?'
+  - '\blead\b'
+  - '\bprincipal\b'
+  - '\bstaff\b'
   - 'director'
   - 'manager'
   - 'vice president'
   - '\bvp\b'
+  - '\bhead\b'
   - '\bintern(s|ship)?\b'
+hide_title_roman_levels: '(?:^|[\s,(-])(?:III|IV|V|VI|VII|VIII|IX|X)(?=$|[\s,):-])'
 # Titles to flag (kept, not hidden).
 flag_title_patterns:
-  - '\bsenior\b'
-  - '\bsr\.?\b'
-  - '\blead\b'
-  - '\bprincipal\b'
-  - '\bstaff\b'
   - '\bassociate\b'            # at banks usually post-MBA; the years/degree rules decide
+
+# Allow-list of finance-role titles. A title must match one of these in its first segment (before the first
+# " - ", ",", or "(") to be shown; "Account Executive, Corporate Finance" and "Business Intelligence Analyst - Corporate
+# Finance" fail because the role noun is not a finance role. Anything not on the list is hidden as off-track.
+allowed_title_patterns:
+  - 'financial analyst'
+  - 'finance analyst'
+  - 'fp&a'
+  - '\bfpa\b'
+  - 'financial planning'
+  - 'business finance'
+  - 'product finance'
+  - 'strategic finance'
+  - 'corporate finance'
+  - 'finance associate'
+  - '(finance|financial) (rotation|development|leadership development)'
+  - 'pricing analyst'
+  - 'pricing finance'
+  - 'deals? desk'
+  - 'deal finance'
+  - 'revenue analyst'
+  - 'cost analyst'
+  - 'equity research'
+  - 'research associate'
+  - 'equity analyst'
+  - 'investment analyst'
+# A bare first segment such as "Analyst, FP&A" is judged by the rest of the title.
+generic_title_heads: ['^(?:associate )?analyst$', '^associate$', '^specialist$', '^research analyst$']
 
 # Quant: title match hides. JD match hides only for the strong phrases.
 quant_title_patterns: ['\bquant', 'quantitative (research|trad|develop|analyst|strateg)']

@@ -90,11 +90,12 @@ def test_mark_keeps_notes_formatting_and_other_rows(env):
     _, out = env
     path = out / "JobBoard_Master.xlsx"
     wb = load_workbook(path)
-    wb["Board"]["Q2"].value = "call recruiter"
+    ws0 = wb["Board"]
+    ws0.cell(row=2, column=[c.value for c in ws0[1]].index("Notes") + 1).value = "call recruiter"
     wb.save(path)
     excel.mark_status(1, "Interested", now=NOW, out_dir=out)
     ws = load_workbook(path)["Board"]
-    assert ws["Q2"].value == "call recruiter" and ws.freeze_panes == "A2" and ws["F2"].hyperlink is not None
+    assert ws.cell(row=2, column=[c.value for c in ws[1]].index("Notes") + 1).value == "call recruiter" and ws.freeze_panes == "A2" and ws["F2"].hyperlink is not None
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="file locking semantics are Windows-specific")
@@ -249,7 +250,10 @@ def test_render_and_finish_end_to_end(env):
     row = board(out)[0]
     assert row["Status"] == "Docs Ready" and done["status"] == "Docs Ready"
     ws = load_workbook(out / "JobBoard_Master.xlsx")["Board"]
-    assert ws["O2"].hyperlink.target.endswith("Resume_Acme_Robotics.pdf") and ws["P2"].hyperlink.target.endswith("Cover_Letter_Acme_Robotics.pdf")
+    hdr = [c.value for c in ws[1]]
+    rc, lc = hdr.index("Resume") + 1, hdr.index("Cover Letter") + 1
+    assert ws.cell(row=2, column=rc).hyperlink.target.endswith("Resume_Acme_Robotics.pdf")
+    assert ws.cell(row=2, column=lc).hyperlink.target.endswith("Cover_Letter_Acme_Robotics.pdf")
     # the next board run keeps the links and the status
     assert excel._find_pdf(1, "resume").endswith("Resume_Acme_Robotics.pdf")
 

@@ -26,6 +26,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--top", type=int, default=15, help="rows to print")
     run.add_argument("--state", type=Path, help="state directory (default: state)")
     run.add_argument("--no-excel", action="store_true", help="skip the Excel workbooks")
+    run.add_argument("--no-gate", action="store_true", help="skip the career-ops qualification gate (liveness, years, keywords, evaluation)")
+    run.add_argument("--refresh-careerops", action="store_true", help="re-run career-ops evaluations even when cached")
+    tb = sub.add_parser("table", help="print row, company, title, kept/hidden, reason for a run")
+    tb.add_argument("--ids", default="", help="Excel IDs, e.g. 1-17 or 1,5,8")
+    tb.add_argument("--date", help="run date (YYYY-MM-DD), default latest")
+    tb.add_argument("--out", type=Path)
+    tb.add_argument("--state", type=Path)
     run.add_argument("--scan-receipt", type=Path, help="career-ops scan --json receipt (default: state/last_scan.json)")
     rev = sub.add_parser("review", help="support for the /review command")
     rsub = rev.add_subparsers(dest="rcmd", required=True)
@@ -54,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "review":
         return _review(args)
+    if args.cmd == "table":
+        return _table(args)
     if args.cmd == "mark":
         return _mark(args)
     if args.cmd == "apply":
@@ -63,12 +72,14 @@ def main(argv: list[str] | None = None) -> int:
         result = pipeline.run(
             today=date.fromisoformat(args.today) if args.today else None,
             limit=args.limit, refresh=args.refresh, fetch=not args.no_fetch,
-            history=args.history, out_dir=args.out, workers=args.workers,
+            history=args.history, out_dir=args.out, workers=args.workers, gate=not args.no_gate,
+            refresh_careerops=args.refresh_careerops, state_dir=args.state,
+            scan_receipt=excel.load_receipt(args.scan_receipt),
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(pipeline.format_summary(result, top=args.top))
+    print(pipeline.format_summary(result, top=args.top, samples=False))
     if not args.no_excel:
         try:
             out = excel.write_outputs(result, out_dir=args.out, state_dir=args.state, scan_receipt=args.scan_receipt)
@@ -82,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         for note in out["notes"]:
             print(f"  NOTE: {note}")
         _write_last_run(result, out, args.state)
+    print("\n".join(pipeline.format_samples(result)))      # last, so they are easy to find at the end of every run
     return 0
 
 
@@ -90,7 +102,8 @@ def _write_last_run(result: dict, out: dict, state_dir: Path | None) -> None:
     sdir = state_dir or review.config.state_dir()
     sdir.mkdir(parents=True, exist_ok=True)
     summary = {
-        "run_date": result["run_date"], "history_rows": result["history_rows"],
+        "run_date": result["run_date"], "history_rows": result["history_rows"], "gate": result.get("gate", {}),
+        "funnel": {k: result["funnel"][k] for k in ("steps", "totals", "classifier", "dropped_by_step")},
         "roles_found": len(result["shown"]) + len(result["hidden"]), "kept": len(result["shown"]),
         "hidden": len(result["hidden"]), "board_total": out["board"], "new": out["new"], "hidden_by_rule": result["hidden_by_rule"], "snapshot": out["snapshot"],
         "master": out["master"], "locked": out["locked"], "notes": out["notes"],
@@ -174,4 +187,45 @@ def _apply(args) -> int:
     except (applications.ApplyError, KeyError, excel.MasterUnreadable) as exc:
         print(f"error: {exc.args[0] if isinstance(exc, KeyError) else exc}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _ids(spec: str) -> set[int]:
+    out: set[int] = set()
+    for part in filter(None, (p.strip() for p in spec.split(","))):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return out
+
+
+def _table(args) -> int:
+    out_dir = args.out or excel.config.output_dir()
+    state = args.state or excel.config.state_dir()
+    if args.date:
+        path = out_dir / f"run_{args.date}.json"
+    else:
+        runs = sorted(out_dir.glob("run_*.json"))
+        path = runs[-1] if runs else out_dir / "run_none.json"
+    if not path.exists():
+        print(f"error: {path} not found; run python -m board run first", file=sys.stderr)
+        return 2
+    data = json.loads(path.read_text(encoding="utf-8"))
+    ledger = json.loads((state / "ids.json").read_text(encoding="utf-8")).get("jobs", {}) if (state / "ids.json").exists() else {}
+    want = _ids(args.ids) if args.ids else None
+    rows = []
+    for verdict, items in (("kept", data["shown"]), ("hidden", data["hidden"])):
+        for j in items:
+            num = ledger.get(j["id"], {}).get("id")
+            if num is None or (want is not None and num not in want):
+                continue
+            reason = "; ".join(r["text"] for r in j["reasons"]) if j["reasons"] else "; ".join(j["flags"][:3])
+            co = j.get("careerops_score")
+            rows.append((num, j["company"], j["title"], verdict, co, reason))
+    rows.sort()
+    print(f"{'row':>3}  {'company':<16} {'title':<50} {'result':<6} {'co-ops':>6}  reason / flags")
+    for num, company, title, verdict, co, reason in rows:
+        print(f"{num:>3}  {company[:16]:<16} {title[:50]:<50} {verdict:<6} {'-' if co is None else format(co, 'g'):>6}  {reason}")
     return 0

@@ -63,7 +63,7 @@ def test_first_run_writes_both_files_with_spec_layout(dirs):
     out = run(res, dirs)
     assert (dirs[0] / "JobBoard_2026-10-29.xlsx").exists() and (dirs[0] / "JobBoard_Master.xlsx").exists()
     wb = load_workbook(out["master"])
-    assert wb.sheetnames == ["Board", "Hidden", "Check Manually", "Run Log"]
+    assert wb.sheetnames == ["Board", "Hidden", "Funnel", "Check Manually", "Run Log"]
     ws = wb["Board"]
     assert ws.freeze_panes == "A2" and ws.auto_filter.ref.startswith("A1:")
     rows = board_rows(out["master"])
@@ -143,7 +143,8 @@ def test_new_rows_bold_old_rows_not(dirs):
     run(result([job("eeee0001")]), dirs)
     run(result([job("eeee0001"), job("eeee0002", score=60)]), dirs, now=datetime(2026, 10, 30, 8, 0))
     ws = load_workbook(dirs[0] / "JobBoard_Master.xlsx")["Board"]
-    keys = {ws.cell(row=r, column=18).value: ws.cell(row=r, column=5).font.bold for r in range(2, 4)}
+    kc = excel.BOARD_COLS.index('Key') + 1
+    keys = {ws.cell(row=r, column=kc).value: ws.cell(row=r, column=5).font.bold for r in range(2, 4)}
     assert not keys["eeee0001"] and keys["eeee0002"] is True
 
 

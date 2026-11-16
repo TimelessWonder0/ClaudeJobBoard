@@ -4,7 +4,7 @@ Personal daily job board for Shreyas Kukanur. Runs on Windows 11 (Windows PowerS
 
 ## Goal
 
-Every day: find finance roles at my target companies posted in the last 4 days and within my reach, score them against my resume, and write a dated Excel board I can sort and mark Applied. When I pick a role, build a tailored resume and cover letter PDF for it.
+Every day: find finance roles at my target companies posted in the last 3 days and within my reach, score them against my resume, and write a dated Excel board I can sort and mark Applied. When I pick a role, build a tailored resume and cover letter PDF for it.
 
 ## How to run it
 
@@ -14,11 +14,11 @@ Every day: find finance roles at my target companies posted in the last 4 days a
 jobboard             # scan, build the Excel board, summary, open Excel
 jobboard -Review     # same, plus claude -p "/review" so the top 25 get Why it fits / Gaps
 jobboard -NoOpen     # do not open Excel at the end
-jobboard -Days 7     # scan window in days (default 4)
+jobboard -Days 7     # scan window in days (default 3)
 jobboard -SkipScan   # rebuild the board from the last scan only
 ```
 
-`C:\ClaudeJobBoard\jobboard.ps1` runs, in order: (1) `node scan.mjs --since 4 --json` in `career-ops\`, receipt saved to `logs\<date>_scan.json` and `state\last_scan.json`; (2) `python -m board run`; (3) `claude -p "/review"` only with `-Review`; (4) a summary (companies scanned, boards that errored, roles found / kept / hidden, new since last run); (5) open `output\JobBoard_Master.xlsx` unless `-NoOpen`. Everything is logged to `logs\<date>.log`.
+`C:\ClaudeJobBoard\jobboard.ps1` runs, in order: (1) `node scan.mjs --since 3 --json` (whole boards, about 10-20 minutes) in `career-ops\`, receipt saved to `logs\<date>_scan.json` and `state\last_scan.json`; (2) `python -m board run`; (3) `claude -p "/review"` only with `-Review`; (4) a summary (companies scanned, boards that errored, roles found / kept / hidden, new since last run); (5) open `output\JobBoard_Master.xlsx` unless `-NoOpen`. Everything is logged to `logs\<date>.log`.
 
 - Exit codes: 0 ok, 1 a step failed (the message names the step and why), 2 every board failed (check the internet; the run stops before step 2), 3 prerequisite missing.
 - `scan.mjs --json` exits 2 when **any** board failed, so exit 2 alone is not "all failed". The script decides from the receipt (errors plus `unverified_zero` against `scanned`).
@@ -42,21 +42,29 @@ jobboard -SkipScan   # rebuild the board from the last scan only
 
 ## Targets
 
-- Roles: Financial Analyst, FP&A, Pricing / Deal Finance, Equity Research Associate. Entry level to 3 years.
+- Roles: Financial Analyst, FP&A, Pricing / Deal Finance, Equity Research Associate and finance-adjacent roles. Entry level to 2 years required.
 - Metros: Bay Area, Seattle, Austin, Chicago, New York, Boston, Miami, Hawaii. On-site or hybrid only.
 - Companies: `config/companies.yaml` (69 companies, source of truth for names, metros, priority). `career-ops-data/portals.yml` is generated from it; resolution status is in PLAN.md. Do not add companies the user did not list.
 
-## Hard filters (hide from the board, but LOG the reason in the Hidden sheet)
+## The negative-filter funnel (replaces keyword search)
 
-1. Quant roles.
-2. Master's / MBA **required** (preferred is fine).
-3. More than 3 years of experience **required** (preferred is fine).
-4. Title contains director, manager, VP / vice president, or intern.
-5. Outside my metros.
-6. Fully remote.
-7. Posted more than 4 days ago.
+The board does not search for finance words. It pulls **every job at every company**, then removes what clearly does not fit, cheapest steps first. A good posting with an unusual title survives unless a stated rule removes it. Implemented in `board/funnel.py` (steps 1-5) and `board/pipeline.py` (steps 6-7); config in `config/funnel.yaml`, `config/negative_titles.yaml`, `config/filters.yaml`, `config/careerops.yaml`.
 
-Everything else is shown with a score and flags. I want to choose, so **do not over-filter**. When a rule is ambiguous (e.g. "3-5 years", unclear location, no posted date), show the job and add a flag instead of hiding it. Titles like "Senior" are flagged, not hidden. Only high- and medium-confidence evidence can hide a job. The rules live in `config/filters.yaml`; scoring weights in `config/scoring.yaml`.
+1. **Pull everything.** In `career-ops-data/portals.yml`: `title_filter.positive` and `negative` are EMPTY, no `location_filter`, no `experience_filter`, no search queries (Amazon and Google use a blank search; Apple's provider refuses an empty one, so it uses the single letter "a"), page limits raised (`max_pages`). career-ops then records every job, with `max_posting_age_days: 3`.
+2. **Posted within `window_days` (3).** The scan uses `--since 3`. Undated postings stay only if first seen within 3 days, flagged "date approx".
+3. **Location.** Keep the 8 metros and multi-location postings that include one. Drop fully remote and other places. Empty or vague locations stay, flagged.
+4. **Negative titles** (`config/negative_titles.yaml`, whole words only, so "lead" does not drop "leadership"): senior, sr, lead, principal, staff, manager, mgr, director, head, vp, vice president, president, chief, officer, partner (not "business partner"), III and above, engineer, engineering, developer, software, scientist, architect, designer, technician, mechanic, nurse, physician, pharmacist, driver, warehouse, associate only next to a retail/warehouse word, sales representative, account executive, account manager, recruiter, attorney, counsel, paralegal, intern, internship, co-op. Sector words (software, engineering, warehouse) are ignored when the title is clearly a finance role ("Equity Research Associate, Software").
+5. **Finance relevance, generous.** Keep if the title or ATS department matches the keyword list (finance, FP&A, planning, corporate development, M&A, strategy, business operations, pricing, deal desk, revenue, treasury, investor relations, investment, equity, research, valuation, capital, credit, risk analyst, commercial analyst). Accounting, audit, tax and payroll titles go to Hidden as "accounting track". Titles matching nothing are judged by Claude (batches of 50, keep or drop, cached by title in `state/title_class.json`); if Claude fails or is capped the title is KEPT with a flag. ATS departments are not stored by career-ops' scan history, so the department test only works where the URL carries one (Apple `?team=`).
+6. **Experience, degree, license (needs the JD, survivors only).** Required years above `max_required_years` (**2**) are dropped; 2 is kept as "stretch"; "not stated" is kept and flagged. "Bachelor's + 3 or Master's + 1" is 3. Required section only. Career-ops `jd-years.mjs` cross-checks; the higher number wins and is flagged. Also dropped: MBA, Master's, CPA or CFA required; Series 7/63/65/66 required before hire (sponsored after hire is kept, "licenses sponsored"); a new-grad window that clearly excludes a Dec 2024 graduate; fully remote per the JD; quant roles.
+7. **Fit and ranking.** Liveness check (`check-liveness.mjs`) drops closed postings; a career-ops evaluation (1-5 score and report) runs on survivors, at most `max_evaluations_per_run` (25) new ones per run, best Fit Score first, the rest flagged "career-ops not evaluated yet"; below `min_score` (3.0) is hidden as "career-ops: low fit". Board order: career-ops score, then Fit Score.
+
+**Safety net.** Every dropped row goes to the Hidden sheet with its step and reason, and to `output/Dropped_<date>.csv` (the sheet is capped at `hidden_sheet_max_rows`; the CSV is complete). Rows dropped before the JD stage (steps 2-5) have no ID and cannot be overridden from Excel; change the config instead. The **Funnel** sheet has counts per company per step (pulled, after date, after location, after titles, after finance, after years, after fit) plus the scan's own totals and boards that errored. Each run ends by printing 25 random titles dropped at step 4 and 25 at step 5. `python -m board table --ids 1-17` prints row, company, title, kept/hidden and reason.
+
+**Tests.** `tests/test_regression_2026_10_29.py` (17 real rows, JDs in `tests/fixtures/`) and `tests/test_funnel.py` keep senior and 3+ year roles hidden and prove that unusual finance titles ("Analyst, Corporate Development", "Treasury Analyst", "Investor Relations Associate", ...) survive steps 4-5. Run `python -m pytest tests -q` before committing.
+
+## Career-ops evaluation (step 7)
+
+A headless `claude -p` worker follows `modes/oferta.md`, writes `career-ops-data/reports/<n>-<company>-<date>.md`, and the 1-5 score is read from its `**Score:**` header. The worker gets Read/Write/Glob/Grep only (no shell), because JD text is untrusted. Results are cached in `state/careerops.json`; an evaluation failure flags the row and never hides it. The candidate's targeting and score caps are in `career-ops-data/modes/_profile.md`. `python -m board run --no-gate` skips steps 5(c) and 7's external calls; `--refresh-careerops` re-evaluates.
 
 ## Architecture
 
@@ -85,7 +93,7 @@ State: `state/` (ID ledger `ids.json`, `reviews.json`, `overrides.json`, `last_s
 - Python 3.12+ (3.13 installed), `openpyxl`, `pyyaml`, `requests`, `pypdf` (pinned in `requirements.txt`; `pytest` in `requirements-dev.txt`). Node only for career-ops and the PDF renderer.
 - Windows: use `pathlib`, UTF-8 everywhere (`encoding="utf-8"`, `PYTHONIOENCODING=utf-8`), no bash-only assumptions in scripts. When writing regexes or Windows paths through a shell, prefer the Write/Edit tools; shell heredocs mangle backslashes.
 - Parse scan-history.tsv by **column name** (the column order is append-only and rows can be short). Columns: `url, first_seen, portal, title, company, status, location, fingerprint, posted_at, trust_score, trust_flags, normalized_company, requisition_id, language, listing_key`.
-- Filters and scoring are pure functions with unit tests. Every filter returns a reason string; every hidden job is logged. Run `python -m pytest tests -q` before committing.
+- Funnel steps, filters and scoring are pure functions with unit tests. Every drop returns a step and a reason; every dropped row is logged. Run `python -m pytest tests -q` before committing.
 - Job IDs are stable (8-hex hash of `listing_key` or `url`; the Excel ID is a separate small integer from `state/ids.json`).
 - Be polite to job sites: obey career-ops' rate limits, cache JD fetches on disk, do not scrape LinkedIn, respect each site's ToS.
 - Do not commit secrets, `career-ops/`, `career-ops-data/`, `output/`, `state/`, `jobs/`, `applications/`, `logs/`. `inputs/` and `config/candidate.yaml` hold personal data; the repo stays private.

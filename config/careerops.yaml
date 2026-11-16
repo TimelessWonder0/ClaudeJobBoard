@@ -1,0 +1,27 @@
+# Qualification gate that runs on roles that already passed the hard filters (config/filters.yaml).
+# Steps, in order: career-ops liveness check -> years cross-check (jd-years.mjs) -> keyword overlap
+# (keyword-match.mjs) -> career-ops evaluation (1-5 score + report) -> hide low fit.
+
+enabled: true
+
+# Hide a role when its career-ops evaluation scores below this (1-5 scale).
+min_score: 3.0
+
+# Liveness: hide postings career-ops reports as expired (node check-liveness.mjs --no-record).
+liveness: true
+
+# Years: career-ops' jd-years.mjs reads the JD independently. If it finds a higher required minimum than
+# board/extract.py, the higher number is used and the role is flagged "years: career-ops says N".
+years_crosscheck: true
+
+# Keyword overlap: keyword-match.mjs coverage % blends into the skill score only when it extracted at least
+# this many JD keywords (it is tuned for tech skills, so a finance JD often yields only a few).
+keyword_min_terms: 3
+keyword_blend: 0.5          # share of the skill score taken from keyword-match when it has enough terms
+
+# Evaluation: a headless Claude worker follows career-ops modes/oferta.md and writes the report to
+# career-ops-data/reports/. It gets Read/Write/Glob/Grep only (no shell), because JD text is untrusted.
+evaluate:
+  workers: 2
+  timeout_seconds: 900
+  model: ""                 # empty = your Claude Code default

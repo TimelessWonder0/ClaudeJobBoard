@@ -16,7 +16,7 @@
 .PARAMETER NoOpen
   Do not open Excel at the end.
 .PARAMETER Days
-  Posting window for the scan (default 4).
+  Posting window for the scan in days (default 3, same as window_days in config\funnel.yaml).
 .PARAMETER SkipScan
   Reuse state\last_scan.json instead of scanning (for re-running the board build only).
 .PARAMETER LockWaitSeconds
@@ -29,7 +29,7 @@
 param(
     [switch]$Review,
     [switch]$NoOpen,
-    [int]$Days = 4,
+    [int]$Days = 3,
     [switch]$SkipScan,
     [int]$LockWaitSeconds = 300
 )
@@ -217,7 +217,7 @@ function Step-Scan {
         return [pscustomobject]@{ Receipt = (Read-Receipt $stateReceipt); ErrFile = $errPath; Skipped = $true }
     }
 
-    Write-Log ("Step 1/5  career-ops scan (node scan.mjs --since {0} --json), about 5 minutes" -f $Days) 'STEP'
+    Write-Log ("Step 1/5  career-ops scan (node scan.mjs --since {0} --json), whole boards, about 10-20 minutes" -f $Days) 'STEP'
     $env:CAREER_OPS_ROOT = Join-Path $script:Root 'career-ops-data'
     $started = Get-Date
     $proc = Start-Process -FilePath 'node' -ArgumentList @('scan.mjs', '--since', "$Days", '--json') `
@@ -318,7 +318,17 @@ function Show-Summary {
         Write-Log 'Companies scanned: n/a (no scan receipt)' 'WARN'
     }
     if ($null -ne $Run) {
+        $fn = $Run.funnel
+        if ($null -ne $fn) {
+            Write-Log 'Funnel (postings standing after each step):'
+            foreach ($s in @($fn.steps)) { Write-Log ("  step {0} {1}: {2}" -f $s.step, $s.name, $s.out) }
+        }
         Write-Log ("Roles found: {0}   kept: {1}   hidden: {2}   new since last run: {3}" -f $Run.roles_found, $Run.kept, $Run.hidden, $Run.new)
+        $g = $Run.gate
+        if ($null -ne $g -and $g.enabled) {
+            Write-Log ("career-ops gate: checked {0}, closed {1}, evaluated {2} (cached {3}), hidden as low fit {4}" -f $g.checked, $g.closed, $g.evaluated, $g.cached, $g.low_fit)
+            foreach ($e in @($g.errors)) { if ($e) { Write-Log ("  ! {0} | {1}: {2}" -f $e.company, $e.title, $e.error) 'WARN' } }
+        }
         Write-Log ("Board now holds {0} roles. Master: {1}" -f $Run.board_total, $Run.master)
         $rules = $Run.hidden_by_rule.PSObject.Properties | ForEach-Object { "{0}: {1}" -f $_.Name, $_.Value }
         if ($rules) { Write-Log ("Hidden by rule: " + ($rules -join ', ')) }

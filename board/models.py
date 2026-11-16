@@ -51,6 +51,8 @@ class Job:
     metro: str = ""              # key from filters.yaml, "" when none
     metro_status: str = "unknown"  # match | outside | unknown
     work_mode: str = "unknown"
+    years_effective: float | None = None     # required years that apply to you after route and career-ops cross-check
+    careerops: dict = field(default_factory=dict)   # {"score": 3.8, "report": path, "years": ..., "keyword_pct": ..., "live": ...}
     company_priority: int | None = None
     reasons: list[Reason] = field(default_factory=list)   # hard-filter hits; non-empty means hidden
     flags: list[str] = field(default_factory=list)

@@ -63,7 +63,7 @@ def prepare(top: int = 25, day: date | None = None, include_reviewed: bool = Fal
         n = excel._num(row.get("Fit Score (0-100)"))
         return n if n is not None else -1.0
 
-    ranked = sorted(board.values(), key=lambda r: (-score_of(r), int(r["ID"])))
+    ranked = sorted(board.values(), key=excel.rank_key)
     rows = []
     skipped = {"status": 0, "already_reviewed": 0}
     for r in ranked:

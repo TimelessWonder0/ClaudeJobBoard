@@ -1,0 +1,62 @@
+# The negative-filter funnel (board/funnel.py). Cheapest steps first; every step logs its counts.
+#
+# 1 pull everything   2 posted in the window   3 location   4 negative titles   5 finance relevance
+# 6 experience / degree / license (needs the JD)   7 career-ops: liveness, evaluation, fit
+#
+# Steps 2-5 drop on the title and location alone, so they cost nothing. Only survivors of step 5 get a JD fetched.
+
+window_days: 3            # step 2. Also used for the scan (--since) and the freshness score.
+
+# Step 5: finance relevance is generous. A title/department that matches `keep_patterns` stays; accounting, audit,
+# tax and payroll go to Hidden as "accounting track"; anything else is classified by Claude (keep or drop).
+keep_patterns:
+  - 'financ'                    # finance, financial, financing
+  - 'fp&a|\bfpa\b'
+  - 'planning'
+  - 'corporate development|corp\.? ?dev'
+  - '\bm&a\b|mergers'
+  - 'strateg'                   # strategy, strategic
+  - 'business operations|biz ?ops'
+  - 'pricing'
+  - 'deals? desk'
+  - 'revenue'
+  - 'treasur'                   # treasury, treasurer
+  - 'investor relations'
+  - 'investment'
+  - 'equity'
+  - 'research'
+  - 'valuation'
+  - 'capital'
+  - 'credit'
+  - 'risk analyst'
+  - 'commercial analyst'
+accounting_patterns:
+  - 'accountant|accounting'
+  - '\baudit'
+  - '\btax(es|ation)?\b'
+  - 'payroll'
+  - 'bookkeep'
+  - 'accounts (payable|receivable)'
+  - 'general ledger'
+  - 'controller'
+  - 'billing (specialist|analyst|associate)'
+# Department / category codes that count as finance-related when a source exposes one (e.g. Apple's team=CODE in
+# the job URL). career-ops' scan history does not store ATS departments, so this only works where the URL carries it.
+finance_department_patterns: []
+
+# Step 5(c): Claude classifies titles that matched nothing above. Batches of 50, answer keep or drop only.
+classifier:
+  enabled: true
+  model: haiku
+  batch_size: 50
+  workers: 4
+  max_calls_per_run: 300     # a safety cap; titles beyond it are KEPT (generous) with a flag
+  timeout_seconds: 240
+
+# Step 7: evaluating every survivor would be slow on a first run, so at most this many new evaluations run per
+# run, best Fit Score first. The rest stay on the Board flagged "career-ops not evaluated yet".
+max_evaluations_per_run: 25
+
+# Safety net
+samples_per_step: 25            # random titles printed for steps 4 and 5 at the end of each run
+hidden_sheet_max_rows: 25000    # Hidden sheet size; the full list is always in output\Dropped_<date>.csv

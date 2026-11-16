@@ -79,11 +79,17 @@ def test_hard_filters_hide_with_reason_and_evidence():
 
 def test_ambiguous_cases_flag_but_do_not_hide():
     jd = "About the role\nWe like 5 years of experience.\nBachelor's degree. Master's preferred. Hybrid, 3 days in office."
-    j = _job(_row(title="Senior Financial Analyst"), jd)
+    j = _job(_row(title="Financial Analyst II"), jd)
     apply_filters(j, extract(jd, j.location))
     assert not j.hidden
     assert any("master" in f for f in j.flags)
-    assert any(f.startswith("title: senior") for f in j.flags)
+    assert any("may be required" in f for f in j.flags)      # low-confidence years only flag
+
+
+def test_senior_titles_are_hidden_not_flagged():
+    j = _job(_row(title="Senior Financial Analyst"), "Basic Qualifications:\n- 2 years of experience.")
+    apply_filters(j, extract(j.jd_text, j.location))
+    assert any(r.rule == "title" for r in j.reasons)
 
 
 def test_quant_title_hides():

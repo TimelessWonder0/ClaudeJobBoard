@@ -49,20 +49,26 @@ def score_job(job: Job, ext_dict: dict, cfg: dict | None = None) -> None:
             break
     if any(re.search(p, title, re.I) for p in cfg.get("title_offtrack_patterns", [])):
         t = min(t, cfg["title_offtrack_score"])
-        job.flags.append("title looks off-track")
     if re.search(r"\b(senior|sr\.?|lead|principal|staff)\b", title, re.I):
         t = max(0.0, t - cfg["title_senior_penalty"])
     parts["title_track"] = t
 
     # years fit
     yr = (ext_dict.get("years_required") or None)
+    stretch = False
     if yr:
-        years = yr.get("years_bachelors") if yr.get("years_bachelors") is not None else yr["min_years"]
+        # the figure that applies to you: route resolved, and the higher of board and career-ops readings
+        years = job.years_effective
+        if years is None:
+            years = yr.get("effective_years")
+        if years is None:
+            years = yr.get("years_bachelors") if yr.get("years_bachelors") is not None else yr["min_years"]
         table_score = next(row["score"] for row in cfg["years_table"] if years <= row["max_years"])
         if yr.get("confidence") == "low":
             b = cfg["years_low_confidence_blend"]
             table_score = b * table_score + (1 - b) * cfg["years_unknown"]
         parts["years_fit"] = table_score
+        stretch = years >= cfg["stretch_years"]
     else:
         parts["years_fit"] = 1.0 if ext_dict.get("no_experience_needed") else cfg["years_unknown"]
 
@@ -78,6 +84,13 @@ def score_job(job: Job, ext_dict: dict, cfg: dict | None = None) -> None:
             matched.append(s["name"])
     parts["skill_overlap"] = min(1.0, (hit / total) / cfg["skill_saturation"]) if job.jd_text else 0.0
     job.score_parts["skills_matched"] = matched
+    # career-ops keyword-match.mjs coverage, used only when it extracted enough keywords to mean something
+    kw = (job.careerops or {}).get("keywords") or {}
+    co_cfg = config.load_yaml("careerops.yaml")
+    if kw.get("coveragePct") is not None and (kw.get("total") or 0) >= co_cfg.get("keyword_min_terms", 3):
+        b = float(co_cfg.get("keyword_blend", 0.5))
+        parts["skill_overlap"] = (1 - b) * parts["skill_overlap"] + b * float(kw["coveragePct"]) / 100.0
+        job.score_parts["keyword_match_pct"] = kw["coveragePct"]
 
     # metro
     parts["metro"] = cfg["metro_scores"].get(job.metro, cfg["metro_unknown"]) if job.metro else cfg["metro_unknown"]
@@ -105,6 +118,10 @@ def score_job(job: Job, ext_dict: dict, cfg: dict | None = None) -> None:
         points += adj["jd_not_fetched"]; notes.append("JD not fetched")
     if job.metro_status == "unknown":
         points += adj["location_unknown"]; notes.append("location unknown")
+    if stretch:
+        points += adj["stretch"]; notes.append("stretch")
+    if not yr and not ext_dict.get("no_experience_needed"):
+        points += adj["years_not_stated"]; notes.append("years not stated")
     if ext_dict.get("degree_preferred") and ext_dict["degree_preferred"]["level"] in ("masters", "mba", "phd"):
         points += adj["degree_masters_preferred"]
     for c in ext_dict.get("certs", []):

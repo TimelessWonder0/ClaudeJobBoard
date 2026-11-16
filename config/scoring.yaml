@@ -31,10 +31,9 @@ title_senior_penalty: 0.15   # subtracted when the title says Senior/Lead/Princi
 years_table:
   - {max_years: 0,  score: 1.00}
   - {max_years: 1,  score: 1.00}
-  - {max_years: 2,  score: 0.95}
-  - {max_years: 3,  score: 0.65}
-  - {max_years: 4,  score: 0.30}
-  - {max_years: 99, score: 0.10}
+  - {max_years: 2,  score: 0.70}   # a 2-year requirement is a stretch for ~1.5 years (also costs adjustments.stretch)
+  - {max_years: 99, score: 0.00}   # 3+ is hidden by config/filters.yaml; shown only if you override it
+stretch_years: 2             # a required figure at or above this counts as "stretch"
 years_unknown: 0.70          # JD states no years, or JD could not be read
 years_low_confidence_blend: 0.5   # low-confidence years: average of the table score and years_unknown
 
@@ -81,7 +80,9 @@ adjustments:
   jd_not_fetched: -5
   location_unknown: -3
   degree_masters_preferred: 0
-  cert_required: -8          # CFA/Series/CPA required (you hold none)
+  stretch: -6                # required years equal to the limit (2): reaching, not matching
+  years_not_stated: -2
+  cert_required: -4          # a license listed as required (CFA/CPA/Series 7/63/65/66 are hidden before this applies)
   cert_obtainable: 0
 
 # --- company aliases ---------------------------------------------------------------------------

@@ -31,10 +31,10 @@ STATUSES = ["New", "Interested", "Docs Ready", "Applied", "Interviewing", "Rejec
 KEEP_NEW_DAYS = 14   # an untouched "New" row that fell out of the scan window is dropped after this long
 
 BOARD_COLS = ["ID", "Date Found", "Posted", "Days Old", "Company", "Title", "Track", "Location / Metro",
-              "Fit Score (0-100)", "Years Req", "Flags", "Why it fits / Gaps", "Status", "Applied Date",
-              "Resume", "Cover Letter", "Notes", "Key"]
-HIDDEN_COLS = ["ID", "Date Found", "Posted", "Company", "Title", "Location", "Fit Score (0-100)", "Rule",
-               "Hidden Reason", "Evidence", "Override", "Key"]
+              "Fit Score (0-100)", "Career-ops score", "Report", "Years Req", "Flags", "Why it fits / Gaps", "Status",
+              "Applied Date", "Resume", "Cover Letter", "Notes", "Key"]
+HIDDEN_COLS = ["ID", "Step", "Date Found", "Posted", "Company", "Title", "Location", "Fit Score (0-100)", "Career-ops score",
+               "Report", "Rule", "Hidden Reason", "Evidence", "Override", "Key"]
 MANUAL_COLS = ["Company", "Group", "Metros", "Priority", "ATS", "Careers Page"]
 LOG_COLS = ["Run Date", "Run Time", "Companies Scanned", "Jobs Seen by Scan", "Roles Found", "Kept", "Hidden",
             "New Since Last Run", "Boards Errored"]
@@ -143,6 +143,7 @@ class MasterState:
     hidden_overrides: set[int] = field(default_factory=set)
     hidden_ids: set[int] = field(default_factory=set)
     hidden_rows: list[dict] = field(default_factory=list)
+    funnel_rows: list[tuple[list, bool]] = field(default_factory=list)   # (values, bold) copied through /review re-renders
     run_log: list[dict] = field(default_factory=list)
     existed: bool = False
 
@@ -198,11 +199,14 @@ def read_master(path: Path) -> MasterState:
     if "Hidden" in wb.sheetnames:
         for row in _sheet_rows(wb["Hidden"]):
             n = _num(row.get("ID"))
+            state.hidden_rows.append(row)
             if n is not None:
-                state.hidden_rows.append(row)
                 state.hidden_ids.add(int(n))
                 if str(row.get("Override") or "").strip():
                     state.hidden_overrides.add(int(n))
+    if "Funnel" in wb.sheetnames:
+        for r in wb["Funnel"].iter_rows():
+            state.funnel_rows.append(([c.value for c in r], bool(r[0].font and r[0].font.bold)))
     if "Run Log" in wb.sheetnames:
         state.run_log = [r for r in _sheet_rows(wb["Run Log"]) if r.get("Run Date")]
     return state
@@ -290,9 +294,12 @@ def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict,
         if is_hidden:
             r0 = job["reasons"][0]
             hidden.append({
-                "ID": num, "Date Found": found, "Posted": posted_cell(job), "Company": job["company"],
+                "ID": num, "Step": _step_label(job.get("step")), "Date Found": found, "Posted": posted_cell(job),
+                "Company": job["company"],
                 "Title": job["title"], "Title__link": job["url"], "Location": job["location"],
-                "Fit Score (0-100)": score, "Rule": ", ".join(r["rule"] for r in job["reasons"]),
+                "Fit Score (0-100)": score, "Career-ops score": job.get("careerops_score"),
+                "Report": "Report" if job.get("careerops_report") else "", "Report__link": job.get("careerops_report") or None,
+                "Rule": ", ".join(r["rule"] for r in job["reasons"]),
                 "Hidden Reason": "; ".join(r["text"] for r in job["reasons"]),
                 "Evidence": next((r["evidence"] for r in job["reasons"] if r["evidence"]), ""),
                 "Override": "", "Key": job["id"],
@@ -305,7 +312,9 @@ def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict,
             "Company": job["company"], "Title": job["title"], "Title__link": job["url"],
             "Track": track_of(job["title"]),
             "Location / Metro": f"{job['location']} — {metro_label(job['metro'])}" if job.get("metro") else job["location"],
-            "Fit Score (0-100)": score, "Years Req": _years_cell(job), "Flags": "; ".join(flags),
+            "Fit Score (0-100)": score, "Career-ops score": job.get("careerops_score"),
+            "Report": "Report" if job.get("careerops_report") else "", "Report__link": job.get("careerops_report") or None,
+            "Years Req": _years_cell(job), "Flags": "; ".join(flags),
             "Why it fits / Gaps": _why_gaps(review, old.get("Why it fits / Gaps") or ""),
             "Status": old.get("Status") or "New",
             "Applied Date": _to_date(old.get("Applied Date")),
@@ -333,11 +342,31 @@ def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict,
             board[num] = row
 
     known = set(master.board) | master.hidden_ids
-    new_ids = {n for n in board if n not in known} | {h["ID"] for h in hidden if h["ID"] not in known}
-    rows = sorted(board.values(), key=lambda r: (-(_num(r.get("Fit Score (0-100)")) if _num(r.get("Fit Score (0-100)")) is not None else -1),
-                                                 int(r["ID"])))
-    hidden.sort(key=lambda r: (-(_num(r.get("Fit Score (0-100)")) if _num(r.get("Fit Score (0-100)")) is not None else -1), r["ID"]))
-    return rows, hidden, new_ids
+    new_ids = {n for n in board if n not in known} | {h["ID"] for h in hidden if h["ID"] is not None and h["ID"] not in known}
+    rows = sorted(board.values(), key=rank_key)
+    hidden.sort(key=rank_key)
+    dropped = []
+    for d in result.get("dropped", []):
+        dropped.append({
+            "ID": None, "Step": _step_label(d["step"]), "Date Found": _to_date(d.get("first_seen")) or today,
+            "Posted": d.get("posted") or "", "Company": d["company"], "Title": d["title"], "Title__link": d["url"],
+            "Location": d["location"], "Fit Score (0-100)": None, "Career-ops score": None, "Report": "", "Rule": d["rule"],
+            "Hidden Reason": d["reason"], "Evidence": d.get("evidence", ""), "Override": "", "Key": d["id"],
+        })
+    dropped.sort(key=lambda r: (-int(str(r["Step"]).split()[0]), r["Company"], r["Title"]))
+    return rows, hidden + dropped, new_ids
+
+
+def _step_label(step) -> str:
+    from .funnel import STEP_NAMES
+    return f"{step} {STEP_NAMES.get(step, '')}".strip() if step else ""
+
+
+def rank_key(row: dict):
+    """Board order: career-ops score (best first, unscored last), then Fit Score, then ID."""
+    co = _num(row.get("Career-ops score"))
+    fit = _num(row.get("Fit Score (0-100)"))
+    return (-(co if co is not None else -1), -(fit if fit is not None else -1), int(row["ID"]))
 
 
 def manual_rows() -> list[dict]:
@@ -371,7 +400,7 @@ def log_row(result: dict, board_rows: list[dict], hidden_rows: list[dict], new_i
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")
 _WIDTHS = {"ID": 6, "Date Found": 12, "Posted": 12, "Days Old": 9, "Company": 22, "Title": 48, "Track": 17,
-           "Location / Metro": 34, "Fit Score (0-100)": 11, "Years Req": 9, "Flags": 40, "Why it fits / Gaps": 46,
+           "Location / Metro": 34, "Fit Score (0-100)": 11, "Career-ops score": 11, "Report": 9, "Years Req": 9, "Flags": 40, "Why it fits / Gaps": 46,
            "Status": 14, "Applied Date": 12, "Resume": 12, "Cover Letter": 13, "Notes": 36, "Key": 10,
            "Location": 30, "Rule": 18, "Hidden Reason": 36, "Evidence": 60, "Override": 10,
            "Group": 18, "Metros": 26, "Priority": 9, "ATS": 22, "Careers Page": 60,
@@ -410,11 +439,11 @@ def _write_sheet(ws, cols: list[str], rows: list[dict], link_cols: set[str], bol
     ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{max(ws.max_row, 2)}"
 
 
-def build_workbook(board_rows, hidden_rows, manual, log_rows, new_ids: set[int]) -> Workbook:
+def build_workbook(board_rows, hidden_rows, manual, log_rows, new_ids: set[int], funnel_rows=None) -> Workbook:
     wb = Workbook()
     ws = wb.active
     ws.title = "Board"
-    _write_sheet(ws, BOARD_COLS, board_rows, {"Title", "Resume", "Cover Letter"}, bold_ids=new_ids, hide_cols=("Key",))
+    _write_sheet(ws, BOARD_COLS, board_rows, {"Title", "Report", "Resume", "Cover Letter"}, bold_ids=new_ids, hide_cols=("Key",))
     last = max(ws.max_row, 2)
     col = {name: get_column_letter(i) for i, name in enumerate(BOARD_COLS, start=1)}
 
@@ -435,11 +464,22 @@ def build_workbook(board_rows, hidden_rows, manual, log_rows, new_ids: set[int])
     ws.conditional_formatting.add(rng, FormulaRule(formula=[f"AND(ISNUMBER({f}2),{f}2<50)"], fill=PatternFill(start_color=GREY, end_color=GREY, fill_type="solid")))
 
     wh = wb.create_sheet("Hidden")
-    _write_sheet(wh, HIDDEN_COLS, hidden_rows, {"Title"}, bold_ids=new_ids, hide_cols=("Key",))
+    _write_sheet(wh, HIDDEN_COLS, hidden_rows, {"Title", "Report"}, bold_ids=new_ids, hide_cols=("Key",))
     ov = DataValidation(type="list", formula1='"Show"', allow_blank=True)
     wh.add_data_validation(ov)
     oc = get_column_letter(HIDDEN_COLS.index("Override") + 1)
     ov.add(f"{oc}2:{oc}{max(wh.max_row, 500)}")
+
+    wf = wb.create_sheet("Funnel")
+    for values, bold in funnel_rows or []:
+        wf.append(values)
+        if bold:
+            for c in wf[wf.max_row]:
+                c.font = Font(bold=True)
+    wf.column_dimensions["A"].width = 34
+    for letter in "BCDEFGH":
+        wf.column_dimensions[letter].width = 14
+    wf.freeze_panes = "A2"
 
     wm = wb.create_sheet("Check Manually")
     _write_sheet(wm, MANUAL_COLS, manual, {"Careers Page"})
@@ -479,6 +519,48 @@ def save_safely(wb: Workbook, target: Path, now: datetime) -> tuple[Path, bool]:
                 pass
 
 
+def funnel_rows(result: dict, hidden_total: int, hidden_listed: int) -> list[tuple[list, bool]]:
+    """The Funnel sheet: counts per company per step, the step totals, and the scan's own numbers."""
+    from .funnel import STAGES, STEP_NAMES
+    f = result.get("funnel") or {}
+    rows: list[tuple[list, bool]] = [([f"Funnel, run {result['run_date']} (window {result['window_days']} days). "
+                                       "Counts of postings still standing after each step."], True), ([], False)]
+    header = ["Company", "Pulled", "After date", "After location", "After titles", "After finance", "After years", "After fit"]
+    rows.append((header, True))
+    companies = f.get("companies", {})
+    for name in sorted(companies, key=lambda n: (-companies[n]["pulled"], n)):
+        rows.append(([name] + [companies[name][s] for s in STAGES], False))
+    tot = f.get("totals", {})
+    rows.append((["TOTAL"] + [tot.get(s, 0) for s in STAGES], True))
+    rows += [([], False), (["Step", "Name", "In", "Out", "Dropped"], True)]
+    for s in f.get("steps", []):
+        rows.append(([s["step"], s["name"], s["in"], s["out"], s["in"] - s["out"] if s["step"] > 1 else None], False))
+    scan = f.get("scan") or {}
+    rows += [([], False), (["career-ops scan receipt"], True)]
+    if scan:
+        rows.append((["Boards scanned", scan.get("scanned")], False))
+        rows.append((["Jobs read by the scan", scan.get("found")], False))
+        rows.append((["Dropped by the scan's own date window", scan.get("filtered")], False))
+        rows.append((["Boards that errored", len(scan.get("errors") or [])], True))
+        for e in scan.get("errors") or []:
+            rows.append(([f"  {e.get('company')}", e.get("error")], False))
+        if scan.get("unverified_zero"):
+            rows.append((["Boards that answered with zero jobs (unverified)", ", ".join(scan["unverified_zero"])], False))
+    else:
+        rows.append((["No scan receipt (state/last_scan.json) was found."], False))
+    c = f.get("classifier") or {}
+    if c.get("titles"):
+        rows += [([], False), (["Step 5 Claude classification"], True),
+                 (["Titles judged", c["titles"]], False), (["Calls", c.get("calls")], False),
+                 (["Served from cache", c.get("cached")], False), (["Failed calls", c.get("failed_calls")], False),
+                 (["Titles over the call cap (kept)", c.get("uncapped_titles")], False)]
+    rows += [([], False), (["Hidden sheet"], True), (["Rows dropped in all steps", hidden_total], False)]
+    if hidden_listed < hidden_total:
+        rows.append(([f"Listed on the Hidden sheet: {hidden_listed}. The rest are in the output folder, Dropped_{result['run_date']}.csv "
+                      f"(newest steps first)."], True))
+    return rows
+
+
 def load_receipt(path: Path | None) -> dict | None:
     path = path or (config.state_dir() / "last_scan.json")
     data = _read_json(path, None)
@@ -514,7 +596,11 @@ def write_outputs(result: dict, now: datetime | None = None, out_dir: Path | Non
     log = [r for r in master.run_log if str(r.get("Run Date")) != entry["Run Date"]] + [entry]
     log_rows = [{c: r.get(c) for c in LOG_COLS} for r in log]
 
-    wb = build_workbook(board_rows, hidden_rows, manual_rows(), log_rows, new_ids)
+    from .funnel import funnel_config
+    cap = int(funnel_config().get("hidden_sheet_max_rows", 25000))
+    listed = hidden_rows[:cap]
+    wb = build_workbook(board_rows, listed, manual_rows(), log_rows, new_ids,
+                        funnel_rows=funnel_rows(result, len(hidden_rows), len(listed)))
     snap, snap_locked = save_safely(wb, snap_path, now)
     notes = []
     if unreadable:
@@ -571,12 +657,11 @@ def apply_reviews(updates: dict[int, dict], now: datetime | None = None, out_dir
                 "reviewed_on": today.isoformat()}.items() if v is not None}
         row["Applied Date"] = _to_date(row.get("Applied Date"))
         rows.append(row)
-    rows.sort(key=lambda r: (-(_num(r.get("Fit Score (0-100)")) if _num(r.get("Fit Score (0-100)")) is not None else -1),
-                             int(r["ID"])))
+    rows.sort(key=rank_key)
     new_ids = {int(r["ID"]) for r in rows + master.hidden_rows if r.get("__bold") and _num(r.get("ID")) is not None}
     log_rows = [{c: r.get(c) for c in LOG_COLS} for r in master.run_log]
 
-    wb = build_workbook(rows, master.hidden_rows, manual_rows(), log_rows, new_ids)
+    wb = build_workbook(rows, master.hidden_rows, manual_rows(), log_rows, new_ids, funnel_rows=master.funnel_rows)
     _write_json(sdir / "reviews.json", reviews)
     snap, snap_locked = save_safely(wb, snap_path, now)
     master_written, master_locked = save_safely(wb, master_path, now)

@@ -1,0 +1,138 @@
+[
+  {
+    "row": 1,
+    "company": "Google",
+    "title": "Associate Finance Analyst, University Graduate",
+    "location": "Chicago, IL, USA",
+    "url": "https://www.google.com/about/careers/applications/jobs/results/76356752739574470-associate-finance-analyst-university-graduate",
+    "expect": "kept"
+  },
+  {
+    "row": 2,
+    "company": "Amazon.com Services LLC",
+    "title": "Sr. Financial Analyst, Physical AI",
+    "location": "Seattle, Washington, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10591584/sr-financial-analyst-physical-ai",
+    "expect": "hidden"
+  },
+  {
+    "row": 3,
+    "company": "Amazon.com Services LLC",
+    "title": "Senior Financial Analyst, Prime Video Finance",
+    "location": "Seattle, Washington, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10591507/senior-financial-analyst-prime-video-finance",
+    "expect": "hidden"
+  },
+  {
+    "row": 4,
+    "company": "Visa",
+    "title": "Sr. Financial Analyst",
+    "location": "US - San Francisco, CA · US - Foster City, CA",
+    "url": "https://visa.wd5.myworkdayjobs.com/Visa/job/US---San-Francisco-CA/Sr-Financial-Analyst_REF089339W",
+    "expect": "hidden"
+  },
+  {
+    "row": 5,
+    "company": "Google",
+    "title": "Strategic Financial Analyst, Pixel Product Finance",
+    "location": "Mountain View, CA, USA",
+    "url": "https://www.google.com/about/careers/applications/jobs/results/100455504999785158-strategic-financial-analyst-pixel-product-finance",
+    "expect": "kept"
+  },
+  {
+    "row": 6,
+    "company": "Amazon.com Services LLC",
+    "title": "Senior Financial Analyst, Worldwide Returns & Recommerce",
+    "location": "Bellevue, Washington, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10588946/senior-financial-analyst-worldwide-returns-recommerce",
+    "expect": "hidden"
+  },
+  {
+    "row": 7,
+    "company": "Apple",
+    "title": "Benefits Financial Analyst",
+    "location": "Cupertino",
+    "url": "https://jobs.apple.com/en-us/details/200690667-0836/benefits-financial-analyst?team=CORSV",
+    "expect": "hidden"
+  },
+  {
+    "row": 8,
+    "company": "Amazon.com Services LLC",
+    "title": "Finance Analyst, Advertising Finance",
+    "location": "Seattle, Washington, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10591225/finance-analyst-advertising-finance",
+    "expect": "kept"
+  },
+  {
+    "row": 9,
+    "company": "Amazon.com Services LLC",
+    "title": "Senior Financial Analyst FP&A, Amazon Leo Finance",
+    "location": "Bellevue, Washington, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10591861/senior-financial-analyst-fp-a-amazon-leo-finance",
+    "expect": "hidden"
+  },
+  {
+    "row": 10,
+    "company": "Amazon.com Services LLC",
+    "title": "Senior Financial Analyst, Deals Desk Finance",
+    "location": "New York, New York, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10587809/senior-financial-analyst-deals-desk-finance",
+    "expect": "hidden"
+  },
+  {
+    "row": 11,
+    "company": "Amazon.com Services LLC",
+    "title": "Financial Analyst II, Leo Accounting PMO - Reporting, Testing, Readiness",
+    "location": "Seattle, Washington, USA · Boston, Massachusetts, USA · Austin, Texas, USA · Culver City, California, USA · Nashville, Tennessee, USA · Arlington, Virginia, USA · Portland, Oregon, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10591921/financial-analyst-ii-leo-accounting-pmo-reporting-testing-readiness",
+    "expect": "hidden"
+  },
+  {
+    "row": 12,
+    "company": "Amazon.com Services LLC",
+    "title": "Robotics Senior Financial Analyst, Amazon Robotics Finance",
+    "location": "Bellevue, Washington, USA · Seattle, Washington, USA · North Reading, Massachusetts, USA",
+    "url": "https://www.amazon.jobs/en/jobs/10590387/robotics-senior-financial-analyst-amazon-robotics-finance",
+    "expect": "hidden"
+  },
+  {
+    "row": 13,
+    "company": "NVIDIA",
+    "title": "Senior Business Intelligence Analyst - Corporate Finance",
+    "location": "US, CA, Santa Clara",
+    "url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/Senior-Business-Intelligence-Analyst---Corporate-Finance_JR2026577",
+    "expect": "hidden"
+  },
+  {
+    "row": 14,
+    "company": "Wells Fargo",
+    "title": "Equity Research Associate, Software - Small & Mid-Cap",
+    "location": "NEW YORK, NY",
+    "url": "https://wf.wd1.myworkdayjobs.com/WellsFargoJobs/job/NEW-YORK-NY/Equity-Research-Associate--Software---Small---Mid-Cap_R-572381",
+    "expect": "kept"
+  },
+  {
+    "row": 15,
+    "company": "Northern Trust",
+    "title": "Investment Analyst",
+    "location": "Chicago, IL",
+    "url": "https://ntrs.wd1.myworkdayjobs.com/northerntrust/job/Chicago-IL/Investment-Analyst_R163401",
+    "expect": "kept"
+  },
+  {
+    "row": 16,
+    "company": "JPMorgan Chase",
+    "title": "US Equity Research - Beverage, Household & Personal Care Products - Associate",
+    "location": "New York, NY, United States",
+    "url": "https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1002/job/210799640",
+    "expect": "kept"
+  },
+  {
+    "row": 17,
+    "company": "AlphaSense",
+    "title": "Enterprise Account Executive, Corporate Finance",
+    "location": "New York, New York, United States",
+    "url": "https://job-boards.greenhouse.io/alphasense/jobs/8920908002",
+    "expect": "hidden"
+  }
+]

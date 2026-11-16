@@ -1,0 +1,95 @@
+# STEP 4 of the funnel: drop a posting when its title contains any of these. Edit freely.
+# Matching is case-insensitive and by WHOLE WORD, so "lead" does not drop "Leadership Development Program"
+# and "head" does not drop "Ahead". Titles are never judged by what is missing, only by what is here.
+
+words:
+  - senior
+  - sr
+  - lead
+  - principal
+  - staff
+  - manager
+  - mgr
+  - director
+  - head
+  - vp
+  - president
+  - chief
+  - officer
+  - partner            # "business partner" is kept, see exceptions
+  - engineer
+  - engineering
+  - developer
+  - software
+  - scientist
+  - architect
+  - designer
+  - technician
+  - mechanic
+  - nurse
+  - physician
+  - pharmacist
+  - driver
+  - warehouse
+  - recruiter
+  - attorney
+  - counsel
+  - paralegal
+  - intern
+  - internship
+  - co-op
+
+# Multi-word phrases (also whole-word).
+phrases:
+  - vice president
+  - sales representative
+  - account executive
+  - account manager
+
+# Removed from the title before matching, so these never trigger a word above.
+exceptions:
+  - business partner
+
+# Roman-numeral levels, matched case-sensitively as separate tokens (Analyst III). II is allowed.
+roman_levels: [III, IV, V, VI, VII, VIII, IX, X]
+
+# "associate" alone is a normal finance title (Equity Research Associate, Finance Associate). It is dropped
+# only next to a retail, warehouse or store word.
+associate_contexts:
+  - fulfillment
+  - fulfilment
+  - warehouse
+  - retail
+  - store
+  - stocking
+  - sales
+  - cashier
+  - customer service
+  - customer care
+  - guest
+  - front desk
+  - pharmacy
+  - inventory
+  - merchandising
+  - production
+  - food
+
+# A word above that names a SECTOR or TEAM rather than the job is ignored when the title is clearly a finance role.
+# Without this, "Equity Research Associate, Software" (a research analyst who covers software stocks) would be dropped
+# for the word "software". The seniority and job-type words (senior, manager, engineer, developer...) are never ignored.
+sector_words: [software, engineering, warehouse]
+protected_titles:
+  - 'financial analyst'
+  - 'finance analyst'
+  - 'fp&a'
+  - 'equity research'
+  - 'research (associate|analyst)'
+  - 'investment analyst'
+  - 'investor relations'
+  - 'pricing analyst'
+  - 'revenue analyst'
+  - 'treasury analyst'
+  - 'credit analyst'
+  - 'strategic finance'
+  - 'corporate development'
+  - 'business finance'

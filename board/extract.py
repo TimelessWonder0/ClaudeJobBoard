@@ -30,6 +30,7 @@ class YearsFact:
     years_bachelors: float | None = None  # years on the Bachelor's route when routes exist
     skill_specific: list[dict] = field(default_factory=list)  # tool-only years, not counted
     other_bars: list[float] = field(default_factory=list)  # every required figure found
+    effective_years: float | None = None  # the figure that applies to a Bachelor's-only candidate (routes resolved)
 
 
 @dataclass
@@ -53,6 +54,17 @@ class ModeFact:
 
 
 @dataclass
+class GradFact:
+    """A graduation window a new-grad posting states. Dates are ISO strings (YYYY-MM-DD) or None."""
+    kind: str                           # window | class_of | by | after | single | recent
+    start: str | None = None
+    end: str | None = None
+    class_year: int | None = None
+    recent_months: int | None = None
+    evidence: str = ""
+
+
+@dataclass
 class Extraction:
     years_required: YearsFact | None = None
     years_preferred: YearsFact | None = None
@@ -62,6 +74,7 @@ class Extraction:
     certs: list[CertFact] = field(default_factory=list)
     work_mode: ModeFact = field(default_factory=lambda: ModeFact("unknown"))
     no_experience_needed: str = ""      # evidence when the JD says entry level / no experience
+    grad_window: GradFact | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -399,6 +412,9 @@ def extract_years(units: list[Unit]) -> tuple[YearsFact | None, YearsFact | None
         years_pref = YearsFact(y, ev, "medium")
     if years_req is not None:
         years_req.skill_specific = skills
+        # "Bachelor's + 3 or Master's + 1" is 3 for a candidate without a completed Master's.
+        years_req.effective_years = (years_req.years_bachelors
+                                     if years_req.routes and years_req.years_bachelors is not None else years_req.min_years)
     return years_req, years_pref, skills, no_exp or no_exp_weak
 
 
@@ -514,19 +530,28 @@ _CERTS: list[tuple[str, re.Pattern]] = [
     ("CAIA", re.compile(r"\bCAIA\b", re.I)),
     ("CFP", re.compile(r"\bCFP\b|certified financial planner", re.I)),
 ]
-_SERIES = re.compile(r"\bSeries\s+((?:\d{1,2}\s*(?:,|and|&|/|or)?\s*)+)", re.I)
+_SERIES = re.compile(
+    r"\bSeries\s+(\d{1,2}(?:\s*\)?(?:\s*,?\s*(?:and|&|/|or)?\s*)\(?\s*(?:or\s+)?(?:Series\s+)?\d{1,2}\s*\)?)*)", re.I)
+# "Series 65 or 66 must be completed prior to conducting Investment Advisory business": a duty that applies only if
+# the person gives advice, not a condition of being hired into a research role.
+_CONDITIONAL = re.compile(
+    r"\b(?:prior to|before) (?:conducting|performing|engaging in|providing|offering|giving)\b|"
+    r"investment advis(?:or|ory) business|\bwhen (?:conducting|advising)\b", re.I)
 _OBTAIN = re.compile(
     r"\b(obtain|obtained|obtaining|acquire|acquired|pass|passing|sit for|register|registered|complete the|"
     r"within\s+(?:\w+\s+)?(?:\(\d+\)\s+)?(?:days|months|weeks|\d+|your first|the first)|first \d+ (?:days|months)|"
     r"sponsor(?:ed|ship)?|will support|willing to (?:obtain|pursue|sit|take)|able to (?:obtain|pass)|"
     r"must be able to|upon hire|after (?:hire|joining|start)|company[- ]paid|we will (?:pay|cover)|"
-    r"you will (?:be required to )?(?:obtain|sit|take|register))\b", re.I)
+    r"you will (?:be required to )?(?:obtain|sit|take|register)|"
+    r"commencement of employment|following (?:hire|commencement|your start|the start)|"
+    r"within\b[^.]{0,30}\b(?:days?|months?|weeks?)\b|\d+(?:\s*or\s*\d+)?-day (?:time )?period|"
+    r"if not (?:immediately )?(?:available|already))\b", re.I)
 _CERT_PREF = re.compile(
     r"\b(preferred|a plus|nice to have|bonus|desired|advantage|candidates?|pursuing|progress(?:ing)? toward|"
     r"working toward|in progress|level (?:i|1|ii|2|iii|3) candidate|ideally)\b", re.I)
 _CERT_REQ = re.compile(r"\b(required|must (?:have|hold|possess|be)|minimum|mandatory|need to (?:have|hold)|"
                        r"hold(?:s|ing)? (?:an? )?(?:active |current )?)\b", re.I)
-_STATUS_RANK = {"required": 4, "obtainable": 3, "preferred": 2, "mentioned": 1}
+_STATUS_RANK = {"required": 5, "obtainable": 4, "preferred": 3, "conditional": 2, "mentioned": 1}
 
 
 def extract_certs(units: list[Unit]) -> list[CertFact]:
@@ -549,7 +574,9 @@ def extract_certs(units: list[Unit]) -> list[CertFact]:
         if not found:
             continue
         sent = u.text
-        if _OBTAIN.search(sent) and not re.search(r"\b(must (?:currently )?hold|currently hold|active)\b", sent, re.I):
+        if _CONDITIONAL.search(sent) and not re.search(r"\b(must (?:currently )?hold|currently hold|active)\b", sent, re.I):
+            status = "conditional"
+        elif _OBTAIN.search(sent) and not re.search(r"\b(must (?:currently )?hold|currently hold|active)\b", sent, re.I):
             status = "obtainable"
         elif _CERT_PREF.search(sent) or u.section == "preferred":
             status = "preferred"
@@ -577,7 +604,7 @@ _REMOTE = re.compile(
     r"\b(fully|100%|completely|entirely|100 percent)\s+remote\b|\bremote[- ](?:first|only|position|role|opportunity)\b|"
     r"\bthis (?:is a |position is |role is )(?:fully |100% )?remote\b|\bwork from anywhere\b", re.I)
 _ONSITE = re.compile(
-    r"\b(on[- ]?site|in[- ]office|onsite)\b|\b5 days (?:a |per )?(?:week )?(?:in|at) (?:the |our )?office\b|"
+    r"\b(on[- ]?site|in[- ]office|onsite|office[- ]based)\b|\b5 days (?:a |per )?(?:week )?(?:in|at) (?:the |our )?office\b|"
     r"\bwork(?:ing)? (?:from|in) (?:the |our )?office\b|\breport to (?:the |our )?office\b", re.I)
 _NOT_REMOTE = re.compile(r"\b(not|no|isn'?t|is not|cannot|can'?t)\b[^.]{0,25}\bremote\b", re.I)
 
@@ -605,6 +632,68 @@ def extract_work_mode(text: str, location: str = "") -> ModeFact:
 
 
 # --------------------------------------------------------------------------------------------
+# Graduation window (new-grad programs)
+# --------------------------------------------------------------------------------------------
+
+_MON = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+_MDATE = r"(" + _MON + r")\s+(?:\d{1,2},?\s+)?(20\d\d)"
+_G_WINDOW = re.compile(r"(?:between|from)\s+" + _MDATE + r"\s*(?:and|to|through|until|-|–)\s*" + _MDATE, re.I)
+_G_CLASS = re.compile(r"\bclass of\s+(20\d\d)\b", re.I)
+_G_BY = re.compile(r"(?:\bby|\bbefore|no later than|on or before)\s+" + _MDATE, re.I)
+_G_AFTER = re.compile(r"(?:\bafter|\bsince|on or after)\s+" + _MDATE, re.I)
+_G_SINGLE = re.compile(r"(?:graduat\w*|graduation(?: date)?)\s+(?:date\s+)?(?:in|on|of|is|by)?\s*(?:expected\s+)?" + _MDATE, re.I)
+_G_RECENT = re.compile(
+    r"graduat\w*[^.]{0,50}?\b(?:within|in|over)\s+(?:the\s+)?(?:last|past|previous)\s+(\d+|twelve|eighteen|twenty[- ]four|one|two)\s*(month|year)", re.I)
+_MONTH_NUM = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+_WORD_MONTHS = {"one": 12, "two": 24, "twelve": 12, "eighteen": 18, "twenty-four": 24, "twenty four": 24}
+
+
+def _first_of_month(mon: str, year: str) -> str:
+    return f"{int(year):04d}-{_MONTH_NUM[mon.lower()[:3]]:02d}-01"
+
+
+def extract_grad_window(units: list[Unit]) -> GradFact | None:
+    """The graduation window a posting states, if any. Looks only at sentences about graduating."""
+    found: dict[str, GradFact] = {}
+    for u in units:
+        s = u.text
+        about = re.search(r"graduat|class of|degree", s, re.I)
+        if not about:
+            continue
+        ev = _evidence(s)
+        m = _G_WINDOW.search(s)
+        if m and re.search(r"graduat|degree", s, re.I):
+            found.setdefault("window", GradFact("window", _first_of_month(m.group(1), m.group(2)),
+                                                _first_of_month(m.group(3), m.group(4)), evidence=ev))
+        m = _G_CLASS.search(s)
+        if m:
+            found.setdefault("class_of", GradFact("class_of", class_year=int(m.group(1)), evidence=ev))
+        m = _G_RECENT.search(s)
+        if m:
+            n = m.group(1).lower().replace("-", " ")
+            months = _WORD_MONTHS.get(n.replace(" ", "-"), _WORD_MONTHS.get(n)) if not n.isdigit() else int(n)
+            if months is not None and m.group(2).lower().startswith("year") and n.isdigit():
+                months = int(n) * 12
+            if months:
+                found.setdefault("recent", GradFact("recent", recent_months=months, evidence=ev))
+        if re.search(r"graduat", s, re.I):
+            m = _G_BY.search(s)
+            if m:
+                found.setdefault("by", GradFact("by", end=_first_of_month(m.group(1), m.group(2)), evidence=ev))
+            m = _G_AFTER.search(s)
+            if m:
+                found.setdefault("after", GradFact("after", start=_first_of_month(m.group(1), m.group(2)), evidence=ev))
+            m = _G_SINGLE.search(s)
+            if m and "window" not in found:
+                d = _first_of_month(m.group(1), m.group(2))
+                found.setdefault("single", GradFact("single", d, d, evidence=ev))
+    for kind in ("window", "class_of", "recent", "after", "by", "single"):
+        if kind in found:
+            return found[kind]
+    return None
+
+
+# --------------------------------------------------------------------------------------------
 # Public entry point
 # --------------------------------------------------------------------------------------------
 
@@ -621,4 +710,5 @@ def extract(text: str, location: str = "") -> Extraction:
         certs=extract_certs(units),
         work_mode=extract_work_mode(text or "", location),
         no_experience_needed=no_exp,
+        grad_window=extract_grad_window(units),
     )
