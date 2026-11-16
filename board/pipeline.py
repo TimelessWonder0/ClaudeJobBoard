@@ -200,7 +200,7 @@ def run(today: date | None = None, limit: int | None = None, refresh: bool = Fal
         refresh_careerops: bool = False, state_dir: Path | None = None, scan_receipt: dict | None = None) -> dict:
     today = today or date.today()
     fcfg = funnel.funnel_config()
-    window = int(fcfg["window_days"])
+    window = int(config.filters_config()["days"])
     gate = gate and bool(config.load_yaml("careerops.yaml").get("enabled", True))
 
     rows = ingest.read_history(history or config.history_path())

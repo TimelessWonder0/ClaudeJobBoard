@@ -1,7 +1,8 @@
 # Hard filters and metro map for board/filters.py. Rules mirror CLAUDE.md.
 # Anything ambiguous is flagged, never hidden.
 
-posting_max_age_days: 3        # keep equal to window_days in funnel.yaml
+# THE posting window, in days, measured from run start in America/Chicago. Every filter, score and scan reads this one value.
+days: 4
 
 # Years of experience. Hide when the minimum REQUIRED years is above this (so 3 or more is hidden).
 # A requirement equal to this number is kept and flagged "stretch". The figure used is the one that applies to
@@ -64,6 +65,15 @@ allowed_title_patterns:
   - 'research associate'
   - 'equity analyst'
   - 'investment analyst'
+  - 'investment bank|banking (analyst|associate)'
+  - 'private equity|venture capital|growth equity'
+  - 'credit (analyst|associate|underwriter)|underwriter|underwriting'
+  - 'loan (officer|analyst|underwriter)|lending (analyst|associate)'
+  - 'portfolio (analyst|associate)|asset management|wealth (analyst|associate)'
+  - 'capital markets|fixed income|leveraged finance|restructuring|syndicat'
+  - 'sales (and|&) trading|trading analyst|securities analyst|treasury analyst'
+  - 'corporate development|m&a|mergers'
+  - 'investor relations|risk analyst|economist'
 # A bare first segment such as "Analyst, FP&A" is judged by the rest of the title.
 generic_title_heads: ['^(?:associate )?analyst$', '^associate$', '^specialist$', '^research analyst$']
 
@@ -82,6 +92,7 @@ generic_location_patterns:
   - '^\s*$'
   - '^(united states|usa|u\.s\.a?\.?|us)\s*$'
   - 'multiple locations?'
+  - '^\d+ locations?$'
   - 'various'
   - '^n/?a$'
   - 'flexible'
@@ -113,3 +124,21 @@ metros:
   hawaii:
     label: Hawaii
     cities: [Honolulu, Hawaii]
+  dallas:
+    label: Dallas
+    cities: [Dallas, Fort Worth, Irving, Plano, Frisco, Richardson, Addison]
+  denver:
+    label: Denver
+    cities: [Denver, Boulder, Englewood, Greenwood Village, Broomfield]
+  atlanta:
+    label: Atlanta
+    cities: [Atlanta, Alpharetta, Sandy Springs]
+  dc_baltimore:
+    label: DC-Baltimore
+    cities: ["Washington DC", "Washington D.C.", "Washington, DC", "Arlington, VA", "Alexandria, VA", Bethesda, McLean, Reston, Tysons, Baltimore, "Columbia, MD", Rockville]
+  los_angeles:
+    label: Los Angeles
+    cities: [Los Angeles, Santa Monica, Culver City, El Segundo, Pasadena, Burbank, Irvine]
+  san_diego:
+    label: San Diego
+    cities: [San Diego, La Jolla, Carlsbad]

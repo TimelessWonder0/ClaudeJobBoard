@@ -5,7 +5,7 @@
 #
 # Steps 2-5 drop on the title and location alone, so they cost nothing. Only survivors of step 5 get a JD fetched.
 
-window_days: 3            # step 2. Also used for the scan (--since) and the freshness score.
+# step 2 uses `days` in config/filters.yaml (the one place the posting window is set).
 
 # Step 5: finance relevance is generous. A title/department that matches `keep_patterns` stays; accounting, audit,
 # tax and payroll go to Hidden as "accounting track"; anything else is classified by Claude (keep or drop).
@@ -30,6 +30,13 @@ keep_patterns:
   - 'credit'
   - 'risk analyst'
   - 'commercial analyst'
+  - 'banking|banker'            # investment banking, corporate banking, private banking
+  - 'private equity|venture|growth equity|buyout|\bpe\b|\bvc\b'
+  - 'lending|\bloans?\b|underwrit|mortgage|leverage'
+  - 'portfolio|asset management|wealth|\bfunds?\b|hedge'
+  - 'fixed income|securities|derivatives|\bmarkets?\b|sales (and|&) trading|\btrad(er|ing)\b'
+  - 'restructuring|syndicat|capital markets|\becm\b|\bdcm\b'
+  - 'quantitative|economist|economics'
 accounting_patterns:
   - 'accountant|accounting'
   - '\baudit'

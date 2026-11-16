@@ -100,7 +100,7 @@ def score_job(job: Job, ext_dict: dict, cfg: dict | None = None) -> None:
     parts["company_priority"] = cfg["company_priority_scores"].get(pr, cfg["company_unknown"]) if pr else cfg["company_unknown"]
 
     # freshness
-    max_age = config.filters_config()["posting_max_age_days"]
+    max_age = config.filters_config()["days"]
     if job.age_days is None:
         f = cfg["freshness_floor"]
     else:

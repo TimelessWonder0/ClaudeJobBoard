@@ -58,12 +58,17 @@ def _ask(batch: list[tuple[str, str]], cfg: dict) -> dict[str, str]:
     args = [claude, "-p", lines, "--system-prompt", SYSTEM, "--model", cfg.get("model", "haiku"),
             "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
     # A neutral working folder keeps this project's CLAUDE.md and commands out of a one-line classification.
-    with tempfile.TemporaryDirectory() as tmp:
+    # On Windows the claude process can still hold its cwd when run() returns (WinError 32 / 5 on cleanup, which crashed
+    # the 2026-11-10 run), so cleanup is best effort and never raises.
+    tmp = tempfile.mkdtemp(prefix="jobboard_cls_")
+    try:
         try:
             proc = subprocess.run(args, cwd=tmp, capture_output=True, text=True, encoding="utf-8",
                                   timeout=int(cfg.get("timeout_seconds", 240)))
         except (subprocess.TimeoutExpired, OSError):
             return {}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r"\{.*\}", proc.stdout or "", re.S)
     if not m:
         return {}

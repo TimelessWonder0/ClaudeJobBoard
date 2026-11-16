@@ -49,6 +49,10 @@ phrases:
 # Removed from the title before matching, so these never trigger a word above.
 exceptions:
   - business partner
+  - loan officer
+  - credit officer
+  - lending officer
+  - relationship officer
 
 # Roman-numeral levels, matched case-sensitively as separate tokens (Analyst III). II is allowed.
 roman_levels: [III, IV, V, VI, VII, VIII, IX, X]

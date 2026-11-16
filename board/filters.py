@@ -226,8 +226,8 @@ def apply_filters(job: Job, ext: Extraction, cfg: dict | None = None, careerops_
         job.flags.append("work mode not stated")
 
     # 8. age (rows reaching here are already inside the window; kept for rows built by other callers)
-    if job.age_days is not None and job.age_days > cfg["posting_max_age_days"]:
-        job.reasons.append(Reason("age", f"Posted {job.age_days} days ago (limit {cfg['posting_max_age_days']})", ""))
+    if job.age_days is not None and job.age_days > cfg["days"]:
+        job.reasons.append(Reason("age", f"Posted {job.age_days} days ago (limit {cfg['days']})", ""))
 
     # --- flags that never hide ---
     if job.date_approx:

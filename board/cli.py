@@ -28,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--no-excel", action="store_true", help="skip the Excel workbooks")
     run.add_argument("--no-gate", action="store_true", help="skip the career-ops qualification gate (liveness, years, keywords, evaluation)")
     run.add_argument("--refresh-careerops", action="store_true", help="re-run career-ops evaluations even when cached")
+    fe = sub.add_parser("fetch", help="fetch every board (Greenhouse/Lever/Ashby/Workday/... APIs), prefilter, write state/fetched.json")
+    fe.add_argument("--only", nargs="*", help="company or ats names, e.g. greenhouse Stripe")
+    fe.add_argument("--no-detail", action="store_true", help="skip per-job detail calls (list data only)")
+    fe.add_argument("--state", type=Path, help="state directory (default: state)")
+    fe.add_argument("--history", type=Path, help="scan-history.tsv for the scan.mjs providers")
     tb = sub.add_parser("table", help="print row, company, title, kept/hidden, reason for a run")
     tb.add_argument("--ids", default="", help="Excel IDs, e.g. 1-17 or 1,5,8")
     tb.add_argument("--date", help="run date (YYYY-MM-DD), default latest")
@@ -59,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("id", type=int)
         sp.add_argument("--out", type=Path, help="output directory (default: output)")
     args = ap.parse_args(argv)
+    if args.cmd == "fetch":
+        return _fetch(args)
     if args.cmd == "review":
         return _review(args)
     if args.cmd == "table":
@@ -229,3 +236,21 @@ def _table(args) -> int:
     for num, company, title, verdict, co, reason in rows:
         print(f"{num:>3}  {company[:16]:<16} {title[:50]:<50} {verdict:<6} {'-' if co is None else format(co, 'g'):>6}  {reason}")
     return 0
+
+
+def _fetch(args) -> int:
+    from . import config, dates, fetch
+
+    start = dates.run_start()
+    raw_dir = config.ROOT / "logs" / "raw" / dates.chicago_date(start).isoformat()
+    res = fetch.fetch_all(start, only=set(args.only) if args.only else None, raw_dir=raw_dir, detail=not args.no_detail,
+                          history=args.history)
+    path = fetch.save_result(res, args.state)
+    failed = res.failed
+    print(f"fetch {dates.chicago_date(start)} window {res.days}d: {len(res.boards)} boards, {len(failed)} failed, "
+          f"{len(res.jobs)} kept ({sum(1 for j in res.jobs if not j.posted.confirmed)} date unconfirmed), "
+          f"{len(res.review)} 'title not on list' for review, {res.elapsed:.0f}s")
+    for b in failed[:10]:
+        print(f"  FAILED {b.ats}:{b.name} {b.status} {b.note}")
+    print(f"  wrote {path}; raw responses in {raw_dir}")
+    return 0 if len(failed) < len(res.boards) else 2

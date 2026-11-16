@@ -64,6 +64,12 @@ metro_scores:
   boston: 0.70
   miami: 0.55
   hawaii: 0.55
+  dallas: 0.60
+  denver: 0.60
+  atlanta: 0.60
+  dc_baltimore: 0.60
+  los_angeles: 0.65
+  san_diego: 0.65
 metro_unknown: 0.40
 
 # --- company_priority --------------------------------------------------------------------------

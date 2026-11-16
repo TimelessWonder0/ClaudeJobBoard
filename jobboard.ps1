@@ -16,7 +16,7 @@
 .PARAMETER NoOpen
   Do not open Excel at the end.
 .PARAMETER Days
-  Posting window for the scan in days (default 3, same as window_days in config\funnel.yaml).
+  Posting window for the scan in days (default 4, same as days in config\filters.yaml).
 .PARAMETER SkipScan
   Reuse state\last_scan.json instead of scanning (for re-running the board build only).
 .PARAMETER LockWaitSeconds
@@ -29,7 +29,7 @@
 param(
     [switch]$Review,
     [switch]$NoOpen,
-    [int]$Days = 3,
+    [int]$Days = 4,
     [switch]$SkipScan,
     [int]$LockWaitSeconds = 300
 )
