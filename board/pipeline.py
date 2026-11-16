@@ -12,16 +12,19 @@ from __future__ import annotations
 
 import csv
 import json
+import random
+import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-from . import careerops, classify, config, funnel, ingest, jd, score
+from . import careerops, classify, config, dates, fetch, funnel, ingest, jd, markdown, score
 from .extract import extract
 from .filters import apply_filters
+from .fetch.base import RawJob
 from .models import HistoryRow, Job, Reason
 
-_RULE_STEP = {"closed": 7, "careerops_low_fit": 7}
+_RULE_STEP = {"closed": 7, "careerops_low_fit": 7, "score": 7, "metro": 3, "title_not_on_list": 5}
 
 
 class Gate:
@@ -33,14 +36,6 @@ class Gate:
     classify = staticmethod(classify.classify_titles)
 
 
-def _job_from_row(row: HistoryRow, used: date | None, approx: bool, today: date) -> Job:
-    return Job(
-        id=ingest.job_id(row), row=row, company=row.company, title=row.title, location=row.location,
-        url=row.url, portal=row.portal, date_used=used, date_approx=approx,
-        age_days=(today - used).days if used else None,
-    )
-
-
 def _facts_json(job: Job) -> dict:
     return {
         "id": job.id, "url": job.url, "company": job.company, "title": job.title, "location": job.location,
@@ -49,23 +44,6 @@ def _facts_json(job: Job) -> dict:
         "hidden": job.hidden, "reasons": [r.__dict__ for r in job.reasons], "flags": job.flags,
         "score": job.score, "score_parts": job.score_parts, "careerops": job.careerops, "extraction": job.extraction,
     }
-
-
-def phase_a(job: Job, refresh: bool, fetch: bool, gate: bool) -> None:
-    """Step 6 for one posting: fetch the JD, extract, and apply the JD-based rules."""
-    jd.load_or_fetch(job, refresh=refresh, fetch=fetch)
-    ext = extract(job.jd_text, job.location)
-    job.extraction = ext.to_dict()
-    job.company_priority = score.company_priority(job.portal, job.company)
-    co_years, co_confident = None, False
-    if gate and config.load_yaml("careerops.yaml").get("years_crosscheck") and job.jd_text:
-        got = Gate.years(job.jd_text)
-        if got:
-            job.careerops["years"] = got
-            if got.get("status") == "stated" and got.get("min") is not None:
-                co_years, co_confident = float(got["min"]), bool(got.get("confident"))
-    apply_filters(job, ext, careerops_years=co_years, careerops_years_confident=co_confident,
-                  skip_title=True, skip_location=True)
 
 
 def _write_facts(job: Job) -> None:
@@ -166,6 +144,9 @@ def _public(job: Job) -> dict:
         "certs": ext.get("certs", []), "score_parts": job.score_parts,
         "careerops_score": job.careerops.get("score"), "careerops_report": job.careerops.get("report", ""),
         "careerops": job.careerops,
+        "track": job.score_parts.get("track", ""), "tier": score.tier_for(job.score or 0), "training": job.score_parts.get("training_phrases", []),
+        "date_flag": job.date_flag, "pay": job.pay, "workplace": job.workplace,
+        "requirements": markdown.requirement_lines(job.jd_text), "jd_path": str(job.jd_dir / "JD.md") if job.jd_dir and job.jd_source != "none" else "",
     }
 
 
@@ -195,118 +176,200 @@ def write_dropped_csv(path: Path, dropped: list[dict], detailed: list[dict]) -> 
                         "; ".join(r["text"] for r in j["reasons"]), next((r["evidence"] for r in j["reasons"] if r["evidence"]), ""), j["url"]])
 
 
-def run(today: date | None = None, limit: int | None = None, refresh: bool = False, fetch: bool = True,
-        history: Path | None = None, out_dir: Path | None = None, workers: int = 4, gate: bool = True,
-        refresh_careerops: bool = False, state_dir: Path | None = None, scan_receipt: dict | None = None) -> dict:
-    today = today or date.today()
-    fcfg = funnel.funnel_config()
-    window = int(config.filters_config()["days"])
-    gate = gate and bool(config.load_yaml("careerops.yaml").get("enabled", True))
+def _norm_key(*parts: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", "|".join(parts).lower())
 
-    rows = ingest.read_history(history or config.history_path())
-    pool = funnel.build_pool(rows, today, window)
-    if limit:
-        pool = pool[:limit]
+
+def _job_from_raw(rj: RawJob, start: datetime) -> Job:
+    p = rj.posted
+    today = dates.chicago_date(start)
+    used = dates.chicago_date(p.when) if p.confirmed else None
+    row = HistoryRow(url=rj.url, first_seen=today.isoformat(), portal=rj.company, title=rj.title, company=rj.company,
+                     status="added", location=rj.location, posted_at=used.isoformat() if used else "", requisition_id=rj.ext_id)
+    job = Job(id=ingest.job_id(row), row=row, company=rj.company, title=rj.title, location=rj.location, url=rj.url,
+              portal=rj.company, date_used=used, date_approx=not p.confirmed,
+              age_days=(today - used).days if used else None)
+    job.date_flag = "" if p.confirmed else (p.flag or "no date field")
+    job.pay, job.workplace, job.flags = rj.pay, rj.workplace, list(rj.flags)
+    if job.date_flag:
+        job.flags.append("date unconfirmed: " + job.date_flag)
+    return job
+
+
+def phase_a(job: Job, rj: RawJob, refresh: bool, fetch_missing: bool, with_claude: bool) -> None:
+    """Step 6 for one posting: the JD (from the API listing, the cache, or a fetch), extraction, and the JD-based rules."""
+    if (rj.description or "").strip():
+        jd.save_jd(job, rj.description, "api")
+    else:
+        jd.load_or_fetch(job, refresh=refresh, fetch=fetch_missing)
+    ext = extract(job.jd_text, job.location)
+    job.extraction = ext.to_dict()
+    job.company_priority = score.company_priority(job.portal, job.company)
+    co_years, co_confident = None, False
+    if with_claude and config.load_yaml("careerops.yaml").get("years_crosscheck") and job.jd_text:
+        got = Gate.years(job.jd_text)
+        if got:
+            job.careerops["years"] = got
+            if got.get("status") == "stated" and got.get("min") is not None:
+                co_years, co_confident = float(got["min"]), bool(got.get("confident"))
+    apply_filters(job, ext, careerops_years=co_years, careerops_years_confident=co_confident, skip_title=True)
+
+
+def _dedupe(pairs: list[tuple[Job, RawJob]]) -> tuple[list[tuple[Job, RawJob]], int]:
+    """Same posting seen twice (same URL, or same company + title + location): keep the one with a confirmed date."""
+    best: dict[str, tuple[Job, RawJob]] = {}
+    for job, rj in pairs:
+        for key in (job.id, _norm_key(job.company, job.title, job.location)):
+            cur = best.get(key)
+            if cur is None:
+                best[key] = (job, rj)
+            elif rj.posted.confirmed and not cur[1].posted.confirmed:
+                best[key] = (job, rj)
+    keep: dict[str, tuple[Job, RawJob]] = {}
+    for job, rj in pairs:
+        winner = best[job.id]
+        alt = best[_norm_key(job.company, job.title, job.location)]
+        if alt[1].posted.confirmed and not winner[1].posted.confirmed:
+            winner = alt
+        keep[winner[0].id] = winner
+    return list(keep.values()), len(pairs) - len(keep)
+
+
+_PRE_STEP = {"location": 3, "title": 4, "sales like": 4, "moves backward": 4, "wrong function": 4, "staffing": 4,
+             "title not on list": 5}
+
+
+def _funnel_counts(res: fetch.FetchResult, jobs: list[Job]) -> dict:
     counts = funnel.new_counts()
-    for p in pool:
-        funnel.bump(counts, p.company, "pulled")
-    steps: list[dict] = [{"step": 1, "name": "pulled", "in": len(rows), "out": len(pool)}]
-    drops: list[funnel.Drop] = []
+    for b in res.boards:
+        if b.status in ("UNSUPPORTED",):
+            continue
+        d = b.dropped
+        title_drops = sum(n for k, n in d.items() if _PRE_STEP.get(k) == 4)
+        row = counts.setdefault(b.name, {s: 0 for s in funnel.STAGES})
+        row["pulled"] = b.raw
+        row["after_date"] = b.raw - d.get("date", 0)
+        row["after_location"] = row["after_date"] - d.get("location", 0)
+        row["after_titles"] = row["after_location"] - title_drops
+        row["after_finance"] = row["after_titles"] - d.get("title not on list", 0)
+    for j in jobs:
+        row = counts.setdefault(j.company, {s: 0 for s in funnel.STAGES})
+        if not any(_step_of_rule(r.rule) == 6 for r in j.reasons):
+            row["after_years"] += 1
+        if not j.hidden:
+            row["after_fit"] += 1
+    return counts
 
-    def run_step(step: int, items: list[funnel.Posting], fn, stage: str) -> list[funnel.Posting]:
-        out: list[funnel.Posting] = []
-        for p in items:
-            d = fn(p)
-            if d:
-                drops.append(d)
-            else:
-                out.append(p)
-                funnel.bump(counts, p.company, stage)
-        steps.append({"step": step, "name": funnel.STEP_NAMES[step], "in": len(items), "out": len(out)})
-        return out
 
-    s2 = run_step(2, pool, lambda p: funnel.step_date(p, today, window), "after_date")
-    fcfg_filters = config.filters_config()
-    s3 = run_step(3, s2, lambda p: funnel.step_location(p, fcfg_filters), "after_location")
-    neg = funnel.NegativeTitles()
-    s4 = run_step(4, s3, lambda p: funnel.step_title(p, neg), "after_titles")
+def _step_of_rule(rule: str) -> int:
+    return _RULE_STEP.get(rule, 6)
 
-    # step 5: accounting track and keyword relevance are free; Claude judges the rest
-    rel = funnel.FinanceRelevance(fcfg)
-    verdicts = {id(p): rel.judge(p) for p in s4}
-    unknown = [p for p in s4 if verdicts[id(p)] == "unknown"]
-    class_stats: dict = {"titles": 0, "calls": 0}
-    claude_says: dict[str, str] = {}
-    if unknown and gate and fcfg["classifier"].get("enabled", True):
-        cache = classify.load_cache(state_dir)
-        items = [(classify.norm_key(p.title, rel.department_of(p)), f"{p.title} - {p.company}") for p in unknown]
-        claude_says, class_stats = Gate.classify(items, cache, fcfg["classifier"])
-        classify.save_cache(cache, state_dir)
 
-    def finance(p: funnel.Posting):
-        v = verdicts[id(p)]
-        if v == "accounting":
-            return funnel.Drop(p, 5, "accounting", "accounting track", p.title)
-        if v == "keep":
-            return None
-        verdict = claude_says.get(classify.norm_key(p.title, rel.department_of(p)))
-        if verdict == "drop":
-            return funnel.Drop(p, 5, "not_finance", "Not finance-adjacent (Claude judged the title)", p.title)
-        p.flags.append("finance relevance unverified" if verdict is None else "finance-adjacent (Claude)")
-        return None
+def run(start: datetime | None = None, fetched: fetch.FetchResult | None = None, out_dir: Path | None = None,
+        state_dir: Path | None = None, workers: int = 4, refresh: bool = False, fetch_missing: bool = True,
+        with_claude: bool = False, only: set[str] | None = None, detail: bool = True, board_limit: float | None = None,
+        progress=None, history: Path | None = None, raw_dir: Path | None = None, full: bool = False) -> dict:
+    """The one pipeline: fetch, prefilter, JD rules, score, dedupe. Zero Claude calls unless with_claude is set."""
+    start = dates.run_start(start)
+    today = dates.chicago_date(start)
+    window = int(config.filters_config()["days"])
+    scfg = config.scoring_config()
+    res = fetched or fetch.fetch_all(start, only=only, raw_dir=raw_dir or config.ROOT / "logs" / "raw" / today.isoformat(), detail=detail,
+                                     progress=progress, history=history, board_limit=board_limit, full=full)
 
-    s5 = run_step(5, s4, finance, "after_finance")
+    pairs, deduped = _dedupe([(_job_from_raw(rj, start), rj) for rj in res.jobs])
+    review_keys = set()
+    review_jobs: list[Job] = []
+    for rj, _step, _why in res.review:
+        j = _job_from_raw(rj, start)
+        if any(j.id == p[0].id for p in pairs):
+            continue
+        j.reasons.append(Reason("title_not_on_list", "title not on list", rj.title))
+        j.jd_source = "none"
+        review_jobs.append(j)
+        review_keys.add((rj.company, rj.title, rj.url))
 
-    # step 6: JD-based rules, only for what is still standing
-    jobs = [_job_from_row(p.row, p.used, p.approx, today) for p in s5]
-    for j, p in zip(jobs, s5):
-        j.flags = list(p.flags)
-        j.portal = p.row.portal
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool_:
-        list(pool_.map(lambda j: phase_a(j, refresh, fetch, gate), jobs))
-    company_of = {j.id: funnel.canonical_company(j.portal, j.company) for j in jobs}
-    for j in jobs:
-        if not j.hidden:
-            funnel.bump(counts, company_of[j.id], "after_years")
-    steps.append({"step": 6, "name": funnel.STEP_NAMES[6], "in": len(jobs), "out": sum(1 for j in jobs if not j.hidden)})
+        list(pool_.map(lambda p: phase_a(p[0], p[1], refresh, fetch_missing, with_claude), pairs))
+    jobs = [p[0] for p in pairs]
 
-    # step 7
-    gate_summary: dict = {"enabled": gate}
-    if gate:
+    gate_summary: dict = {"enabled": with_claude}
+    if with_claude:
         cache = careerops.load_cache(state_dir)
-        gate_summary.update(run_gate(jobs, cache, refresh_careerops, workers))
+        gate_summary.update(run_gate(jobs, cache, False, workers))
         careerops.save_cache(cache, state_dir)
-    for j in jobs:
-        score.score_job(j, j.extraction)            # final Fit Score (hidden jobs too, so an override already has one)
+    min_score = float(scfg["min_score"])
+    for j in jobs + review_jobs:
+        if j.jd_source != "none" or j.jd_text:
+            score.score_job(j, j.extraction)
+        else:
+            score.score_job(j, {})
+        if not j.hidden and j.score is not None and j.score < min_score:
+            j.reasons.append(Reason("score", f"Score below {min_score:g} ({j.score:g})", ""))
         _write_facts(j)
-        if not j.hidden:
-            funnel.bump(counts, company_of[j.id], "after_fit")
-    steps.append({"step": 7, "name": funnel.STEP_NAMES[7], "in": steps[-1]["out"], "out": sum(1 for j in jobs if not j.hidden)})
 
     shown = sorted((j for j in jobs if not j.hidden), key=_fit_key)
-    detailed_hidden = [_public(j) for j in jobs if j.hidden]
-    dropped = [_dropped_record(d) for d in drops]
+    hidden_jobs = [j for j in jobs if j.hidden] + review_jobs
+    detailed_hidden = [_public(j) for j in hidden_jobs]
+
+    dropped = []
+    for b in res.boards:
+        for company, title, location, url, step_key, reason in b.rows:
+            if (company, title, url) in review_keys:
+                continue
+            step = _PRE_STEP.get(step_key, 4)
+            dropped.append({"id": "", "company": company, "title": title, "location": location, "url": url, "posted": "",
+                            "first_seen": today.isoformat(), "step": step, "step_name": funnel.STEP_NAMES[step],
+                            "rule": step_key, "reason": reason, "evidence": ""})
 
     reason_counts: dict[str, int] = {}
     by_step: dict[int, int] = {}
-    for d in drops:
-        reason_counts[d.rule] = reason_counts.get(d.rule, 0) + 1
-        by_step[d.step] = by_step.get(d.step, 0) + 1
+    for d in dropped:
+        reason_counts[d["rule"]] = reason_counts.get(d["rule"], 0) + 1
+        by_step[d["step"]] = by_step.get(d["step"], 0) + 1
     for j in detailed_hidden:
         by_step[j["step"]] = by_step.get(j["step"], 0) + 1
         for r in j["reasons"]:
             reason_counts[r["rule"]] = reason_counts.get(r["rule"], 0) + 1
 
-    seed = today.isoformat()
-    n = int(fcfg.get("samples_per_step", 25))
+    raw_total = sum(b.raw for b in res.boards)
+    date_dropped = sum(b.dropped.get("date", 0) for b in res.boards)
+    loc_dropped = sum(b.dropped.get("location", 0) for b in res.boards)
+    title_dropped = sum(n for b in res.boards for k, n in b.dropped.items() if _PRE_STEP.get(k) == 4)
+    list_dropped = sum(b.dropped.get("title not on list", 0) for b in res.boards)
+    s2, s3 = raw_total - date_dropped, raw_total - date_dropped - loc_dropped
+    s4 = s3 - title_dropped
+    s5 = s4 - list_dropped
+    n_jd = len(jobs)
+    n_ok6 = sum(1 for j in jobs if not any(_step_of_rule(r.rule) == 6 for r in j.reasons))
+    steps = [{"step": 1, "name": "pulled", "in": raw_total, "out": raw_total},
+             {"step": 2, "name": funnel.STEP_NAMES[2], "in": raw_total, "out": s2},
+             {"step": 3, "name": funnel.STEP_NAMES[3], "in": s2, "out": s3},
+             {"step": 4, "name": funnel.STEP_NAMES[4], "in": s3, "out": s4},
+             {"step": 5, "name": funnel.STEP_NAMES[5], "in": s4, "out": s5},
+             {"step": 6, "name": funnel.STEP_NAMES[6], "in": n_jd, "out": n_ok6},
+             {"step": 7, "name": funnel.STEP_NAMES[7], "in": n_ok6, "out": len(shown)}]
+    counts = _funnel_counts(res, jobs)
+
+    rng = random.Random(today.isoformat())
+    samples = {str(step): [{"company": d["company"], "title": d["title"], "reason": d["reason"]}
+                           for d in rng.sample([x for x in dropped if x["step"] == step],
+                                               min(25, sum(1 for x in dropped if x["step"] == step)))]
+               for step in (4, 5)}
+    fetch_info = {"boards": len(res.boards), "failed": [{"name": b.name, "ats": b.ats, "status": b.status, "note": b.note} for b in res.failed],
+                  "partial": [{"name": b.name, "ats": b.ats, "note": b.note} for b in res.partial], "elapsed_seconds": res.elapsed,
+                  "raw_jobs": raw_total, "deduped": deduped,
+                  "location_step": {k: sum(b.metros.get(k, 0) for b in res.boards) for k in sorted({m for b in res.boards for m in b.metros})}}
     result = {
-        "run_date": today.isoformat(), "window_days": window, "history_rows": len(rows),
-        "selection": {"pool": len(pool)},
-        "jd_fetch": {s: sum(1 for j in jobs if j.jd_source == s) for s in ("fetch-jd", "html", "cache", "none", "apple", "oracle-hcm")},
+        "run_date": today.isoformat(), "run_start": start.isoformat(), "window_days": window, "history_rows": raw_total,
+        "selection": {"pool": len(res.jobs)},
+        "jd_fetch": {s: sum(1 for j in jobs if j.jd_source == s) for s in ("api", "fetch-jd", "html", "cache", "none", "apple", "oracle-hcm")},
         "funnel": {"steps": steps, "companies": counts, "totals": funnel.totals(counts), "dropped_by_step": by_step,
-                   "classifier": class_stats, "scan": _scan_summary(scan_receipt),
-                   "samples": {"4": funnel.sample_drops(drops, 4, n, seed + "-4"), "5": funnel.sample_drops(drops, 5, n, seed + "-5")}},
-        "gate": gate_summary,
+                   "classifier": {}, "scan": {"scanned": len(res.boards), "found": raw_total, "filtered": date_dropped,
+                                              "errors": [{"company": b.name, "error": b.note or b.status} for b in res.failed],
+                                              "unverified_zero": []},
+                   "samples": samples},
+        "gate": gate_summary, "fetch": fetch_info,
         "shown": [_public(j) for j in shown],
         "hidden": detailed_hidden,
         "dropped": dropped,
@@ -351,29 +414,61 @@ def format_samples(result: dict) -> list[str]:
     return lines
 
 
-def format_summary(result: dict, top: int = 15, samples: bool = True) -> str:
-    g = result.get("gate", {})
-    lines = [f"Run {result['run_date']}  window {result['window_days']}d  history rows {result['history_rows']}"]
+def _short(items: list[str], n: int = 5) -> str:
+    return ", ".join(items[:n]) + (f" +{len(items) - n} more" if len(items) > n else "")
+
+
+def _metro_line(f: dict) -> str:
+    m = f["location_step"]
+    bay = m.get("bay_area", 0)
+    other = sum(v for k, v in m.items() if k not in ("bay_area", "outside", "unknown"))
+    return f"Reached the location step: Bay Area {bay:,}, other target metros {other:,}, outside {m.get('outside', 0):,}, unknown {m.get('unknown', 0):,}"
+
+
+def format_console(result: dict, out: dict, latest: Path, top: int = 10, seconds: float = 0.0, log: Path | None = None) -> str:
+    """The whole console summary: 20 lines at most. Everything else goes to logs\board_<date>.log."""
+    f = result["fetch"]
+    steps = {s["step"]: s["out"] for s in result["funnel"]["steps"]}
+    shown = result["shown"]
+    unconfirmed = sum(1 for j in shown if j.get("date_flag"))
+    ids = out.get("ids", {})
+    lines = [f"Job board {result['run_date']}  window {result['window_days']}d  fetch {f['elapsed_seconds']:.0f}s  total {seconds:.0f}s",
+             f"Boards {f['boards']}: failed {len(f['failed'])}" + (f" ({_short([b['name'] for b in f['failed']])})" if f["failed"] else "")
+             + f", partial {len(f['partial'])}" + (f" ({_short([b['name'] for b in f['partial']])})" if f["partial"] else ""),
+             _metro_line(f) if f.get("location_step") else "Location step: n/a",
+             f"Pulled {steps[1]:,} > date {steps[2]:,} > location {steps[3]:,} > title {steps[4]:,} > on list {steps[5]:,} > JD rules {steps[6]:,} > scored {steps[7]:,}",
+             f"Kept {len(shown) - unconfirmed} + {unconfirmed} date unconfirmed, hidden {len(result['hidden'])}, "
+             f"dropped before JD {len(result['dropped']):,}, deduped {f['deduped']}",
+             f"Top {min(top, len(shown))} (ID, score, company | title | training):"]
+    for j in shown[:top]:
+        train = "; ".join(j.get("training") or []) or "-"
+        lines.append(f"  [{ids.get(j['id'], '?')}] {j['score']:>5} {j['company'][:18]:<18} | {j['title'][:44]:<44} | {train[:34]}")
+    if not shown:
+        lines.append("  (no role passed every filter)")
+    lines.append(f"Board: {latest}")
+    if out.get("master"):
+        lines.append(f"Excel: {out['master']}")
+    if log:
+        lines.append(f"Detail: {log}")
+    for note in out.get("notes", [])[:1]:
+        lines.append(f"NOTE: {note[:150]}")
+    return "\n".join(lines[:20])
+
+
+def format_detail(result: dict, out: dict, seconds: float) -> str:
+    """The long version of a run, for logs\board_<date>.log."""
+    f = result["fetch"]
+    lines = [f"Run {result['run_date']} (started {result['run_start']})  window {result['window_days']}d  total {seconds:.0f}s", ""]
     lines += format_funnel(result)
-    lines.append(f"JD source: {result['jd_fetch']}")
-    if g.get("enabled"):
-        lines.append(f"career-ops gate: checked {g['checked']}, closed {g['closed']}, evaluated {g['evaluated']}, "
-                     f"cached {g['cached']}, low fit {g['low_fit']}, not evaluated yet {g.get('not_evaluated', 0)}, "
-                     f"evaluation errors {len(g['errors'])}")
-        for e in g["errors"]:
-            lines.append(f"  ! {e['company']} | {e['title'][:40]}: {e['error']}")
-    lines += [
-        f"Shown {len(result['shown'])}   dropped {len(result['dropped']) + len(result['hidden']):,}   by rule: {result['hidden_by_rule']}",
-        "",
-        f"{'co-ops':>6} {'fit':>5}  {'company':<22} {'title':<46} {'location':<24} flags",
-    ]
-    for r in result["shown"][:top]:
-        flags = "; ".join(r["flags"][:3])
-        cs = r.get("careerops_score")
-        lines.append(f"{'-' if cs is None else format(cs, 'g'):>6} {r['score']:>5}  {r['company'][:22]:<22} {r['title'][:46]:<46} "
-                     f"{r['location'][:24]:<24} {flags}")
-    lines.append("")
-    lines.append(f"Results: {result.get('_path', '')}")
-    if samples:
-        lines += format_samples(result)
-    return "\n".join(lines)
+    lines += ["", f"Fetch: {f['boards']} boards, {f['raw_jobs']:,} jobs listed, {f['elapsed_seconds']:.0f}s, deduped {f['deduped']}",
+              f"JD source: {result['jd_fetch']}", f"Hidden by rule: {result['hidden_by_rule']}"]
+    for label, key in (("FAILED", "failed"), ("PARTIAL", "partial")):
+        for b in f[key]:
+            lines.append(f"  {label} {b['ats']}:{b['name']} {b.get('status', '')} {b.get('note', '')}")
+    lines += ["", f"SHOWN ({len(result['shown'])})"]
+    ids = out.get("ids", {})
+    for j in result["shown"]:
+        lines.append(f"  [{ids.get(j['id'], '?')}] {j['score']:>5} {j['company'][:20]:<20} {j['title'][:50]:<50} {j['location'][:24]:<24} "
+                     f"{'; '.join(j['flags'][:3])}")
+    lines += format_samples(result)
+    return "\n".join(lines) + "\n"

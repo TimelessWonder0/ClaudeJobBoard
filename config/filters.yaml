@@ -4,10 +4,11 @@
 # THE posting window, in days, measured from run start in America/Chicago. Every filter, score and scan reads this one value.
 days: 4
 
-# Years of experience. Hide when the minimum REQUIRED years is above this (so 3 or more is hidden).
+# Years of experience. Hide when the minimum REQUIRED years is above max_required_years (so 4 or more is hidden).
 # A requirement equal to this number is kept and flagged "stretch". The figure used is the one that applies to
-# you: with "Bachelor's + 3 or Master's + 1" it is 3, because you hold no Master's. Preferred years never hide.
-max_required_years: 2
+# you: with "Bachelor's + 4 or Master's + 2" it is 4, because you hold no Master's. Preferred years never hide.
+senior_max_required_years: 4   # a Senior / Sr title is kept only when the minimum required years is this or fewer (decided in the JD stage)
+max_required_years: 3
 min_confidence_to_hide: medium # low | medium | high. Years/degree evidence below this only flags.
 
 # Licenses. Hidden only when required BEFORE hire. Licenses a JD says you can obtain after hire (and any
@@ -24,8 +25,6 @@ newgrad_title_patterns: ['university graduate', 'new grad', 'early career', 'gra
 
 # Senior / managerial titles: HIDDEN. Case-insensitive regexes (the Roman-numeral rule is case-sensitive: III and above).
 hide_title_patterns:
-  - '\bsenior\b'
-  - '\bsr\b\.?'
   - '\blead\b'
   - '\bprincipal\b'
   - '\bstaff\b'
@@ -67,13 +66,19 @@ allowed_title_patterns:
   - 'investment analyst'
   - 'investment bank|banking (analyst|associate)'
   - 'private equity|venture capital|growth equity'
-  - 'credit (analyst|associate|underwriter)|underwriter|underwriting'
-  - 'loan (officer|analyst|underwriter)|lending (analyst|associate)'
-  - 'portfolio (analyst|associate)|asset management|wealth (analyst|associate)'
+  - 'coverage (analyst|associate)|investment banking'
+  - 'lending (analyst|associate)'
+  - 'portfolio (analyst|associate)|asset management (analyst|associate)|wealth (analyst|associate)'
   - 'capital markets|fixed income|leveraged finance|restructuring|syndicat'
   - 'sales (and|&) trading|trading analyst|securities analyst|treasury analyst'
   - 'corporate development|m&a|mergers'
   - 'investor relations|risk analyst|economist'
+# Combo rule: a title with "analyst" or "associate" (business analyst included) that is not on the list above still passes when it
+# also names one of finance_words, unless it matches exclude (off-track kinds of analyst). Bare analyst / associate titles fail.
+analyst_combo:
+  roles: '\b(?:analyst|associate)\b'
+  finance_words: 'financ|fp&a|\bfpa\b|planning|pricing|treasur|revenue|capital|corporate development|strategy (?:&|and) finance|valuation|investor relations'
+  exclude: 'business intelligence|\bBI\b|\bdata\b|\bsystems?\b|software|marketing|\bsales\b|human resources|\bHR\b|design|supply chain'
 # A bare first segment such as "Analyst, FP&A" is judged by the rest of the title.
 generic_title_heads: ['^(?:associate )?analyst$', '^associate$', '^specialist$', '^research analyst$']
 
@@ -102,7 +107,7 @@ generic_location_patterns:
 metros:
   bay_area:
     label: Bay Area
-    cities: [San Jose, San Francisco, Oakland, Palo Alto, Mountain View, Sunnyvale, Santa Clara, Cupertino, Menlo Park, Redwood City, San Mateo, Fremont, Berkeley, Milpitas, Pleasanton, Foster City, South San Francisco, San Bruno, Los Gatos, Campbell, San Carlos, Burlingame, Emeryville, Walnut Creek, Los Altos, Bay Area]
+    cities: [San Jose, San Francisco, Oakland, Palo Alto, Mountain View, Sunnyvale, Santa Clara, Cupertino, Menlo Park, Redwood City, San Mateo, Fremont, Berkeley, Milpitas, Pleasanton, Foster City, South San Francisco, San Bruno, Los Gatos, Campbell, San Carlos, Burlingame, Emeryville, Walnut Creek, Los Altos, Bay Area, SF, Silicon Valley, San Rafael, Daly City, Livermore, Petaluma, Bay Point, "Brisbane, CA", "Dublin, CA", CA-Dublin, "Union City, CA", "Newark, CA", Hayward, San Leandro, San Ramon, Alameda, "Belmont, CA", Saratoga, Morgan Hill, Mill Valley, Sausalito, Novato, Mission Bay]
   seattle:
     label: Seattle
     cities: [Seattle, Bellevue, Redmond, Kirkland]
@@ -138,7 +143,70 @@ metros:
     cities: ["Washington DC", "Washington D.C.", "Washington, DC", "Arlington, VA", "Alexandria, VA", Bethesda, McLean, Reston, Tysons, Baltimore, "Columbia, MD", Rockville]
   los_angeles:
     label: Los Angeles
-    cities: [Los Angeles, Santa Monica, Culver City, El Segundo, Pasadena, Burbank, Irvine]
+    cities: [Los Angeles, Santa Monica, Culver City, El Segundo, Pasadena, Burbank, Irvine, Hawthorne, Long Beach, Torrance, Inglewood, Glendale, Manhattan Beach, Beverly Hills, Woodland Hills, Playa Vista, Marina del Rey, Venice]
   san_diego:
     label: San Diego
     cities: [San Diego, La Jolla, Carlsbad]
+
+# ---- Rules from the finance-job-scout skill, now run in Python ----------------------------------------------------------
+
+# Per-board time limit for the fetch. A board that runs past it is cut off, keeps what it already listed, and is reported as "partial".
+fetch:
+  board_time_limit_seconds: 180
+  workers: 8
+  workday_concurrency: 4          # requests in flight across ALL *.myworkdayjobs.com hosts combined
+  workday_delay_seconds: 0.3      # pause inside each Workday slot after a request, so the combined rate stays polite
+  rate_limit_cooldown_seconds: 60 # boards that still got HTTP 429 after their retries are tried once more after this pause
+  # Server-side search queries for SmartRecruiters, Amazon, Eightfold and Oracle (merged, deduped by job id).
+  # Greenhouse, Lever and Ashby return the whole board in one call, so they need none. `--full` ignores these and pulls everything.
+  keywords: [finance, financial analyst, FP&A, pricing, treasury, corporate development, investor relations, equity research, investment, strategic finance]
+  # Workday searches page 20 at a time through a shared limit, so its list is narrower: no bare "finance" or "investment".
+  workday_keywords: [financial analyst, FP&A, FP&A analyst, financial planning, pricing, treasury, corporate development, investor relations, equity research, strategic finance]
+
+# Staffing agencies and recruiter reposts. Matched against the company name; the JD phrases against the description.
+staffing_agencies: [Robert Half, Insight Global, TEKsystems, Randstad, Kforce, Aerotek, Apex Systems, Beacon Hill, Hays, Michael Page, Vaco,
+  Creative Financial Staffing, Adecco, Manpower, ManpowerGroup, Experis, Accountemps, Robert Walters, Motion Recruitment, Jobot, CyberCoders, Collabera, Judge Group]
+staffing_jd_patterns:
+  - 'on behalf of our client'
+  - '\bour client\b'
+  - 'contract[- ]to[- ](?:hire|perm)'
+  - '\bC2H\b'
+  - '(?:this is a|temporary) contract (?:position|role)'
+  - 'W-?2 contract'
+  - '\d+[- ]month contract'
+
+# Wrong function: accounting, tax, audit, AP/AR, payroll, AML / financial crimes, insurance. Controller, credit and wealth roles are not listed here.
+wrong_function_title_patterns:
+  - '\baccounting\b'
+  - '\baccountant\b'
+  - '\btax\b'
+  - '\baudit(?:or)?\b'
+  - 'accounts? (?:payable|receivable)'
+  - '\bpayroll\b'
+  - 'financial crimes?'
+  - '\baml\b|anti[- ]money'
+  - '\bkyc\b|know your customer'
+  - '\binsurance\b'
+  - 'credit analyst|credit risk|credit officer|credit underwrit|loan analyst|loan underwrit'
+  - 'securitization|\bunderwrit'                       # underwriting of any kind
+
+# Moves backward: estimating, proposal pricing, cost/price analysis on government contracts, EVM / program control.
+moves_backward_title_patterns:
+  - '\bcost estimat'
+  - '\bestimator\b|\bestimating\b'
+  - 'proposal (?:pricing|analyst|cost)'
+  - 'cost\s*/\s*price|price analyst|cost (?:and|&) pricing|pricing (?:and|&) estimating'
+  - '\bevm\b|earned value|program control'
+  - 'contracts? pricing|subcontract'
+# A cost or pricing analyst title is also dropped when the JD is about government contracts.
+moves_backward_cost_titles: ['cost analyst', 'pricing analyst', 'price analyst']
+moves_backward_jd_patterns: ['\bFAR\b', 'DFARS', 'DCAA', 'government contract', 'cost accounting standards', 'earned value', 'proposal']
+
+# Sales-like titles. Client service, advisor and relationship roles are sales, not finance analysis, even when the first words say "Asset Management".
+sales_like_title_patterns:
+  - 'client (?:service|services|advisor|adviser|associate|relationship|solutions?|executive)'
+  - 'relationship (?:manager|associate|banker|officer|specialist|director)'
+  - '(?:financial|wealth|investment|retirement|private) (?:advisor|adviser|consultant|planner)'
+  - '\badvis[eo]r\b'
+  - '\bsales\b|business development|account (?:executive|manager|director)|customer success'
+  - '\bbanker\b|\bbroker\b|loan officer|\bteller\b|branch '

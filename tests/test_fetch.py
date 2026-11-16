@@ -125,7 +125,7 @@ def test_unconfirmed_roles_that_fail_role_filters_are_dropped():
     from board.fetch.base import RawJob
     pre = prefilter.Prefilter(START, 4)
     undated = dates.unconfirmed("none", "no date field")
-    bad = RawJob("A", "greenhouse", "1", "Senior Financial Analyst", "San Jose, CA", "u", undated)
+    bad = RawJob("A", "greenhouse", "1", "Director, Financial Analysis", "San Jose, CA", "u", undated)
     good = RawJob("A", "greenhouse", "2", "Financial Analyst", "San Jose, CA", "u", undated)
     assert pre(bad)[0] == "title" and pre(good) is None
 
@@ -219,3 +219,157 @@ def test_fetch_all_runs_in_parallel_and_saves(monkeypatch, tmp_path):
     body = json.loads(path.read_text(encoding="utf-8"))
     assert body["days"] == 4 and body["jobs"][0]["posted"]["when"].startswith("2026-11-14")
     assert res.elapsed >= 0
+
+
+@pytest.mark.parametrize("title,company,expect", [
+    ("Asset Management - Everyday 401K Internal Client Advisor - Associate", "JPMorgan Chase", "sales like"),      # from the 2026-11-15 smoke run
+    ("Asset Management - Internal Client Advisor - Retirement Plan Specialist - Associate", "JPMorgan Chase", "sales like"),
+    ("Credit Underwriter I/Credit Officer I-Technology", "Bank of America", "wrong function"),      # from the 2026-11-15 trial run
+    ("Cost Estimator", "Acme", "moves backward"),
+    ("Tax Analyst", "Acme", "wrong function"),
+    ("Financial Analyst", "Robert Half", "staffing"),
+    ("Operations Coordinator", "Acme", "title not on list"),
+    ("Senior Financial Analyst", "Acme", None),                 # Senior is decided by the years rule in the JD stage
+    ("Sr. FP&A Analyst", "Acme", None),
+    ("Senior Manager, FP&A", "Acme", "title"),                  # a managerial word still drops it
+    ("Treasury Analyst", "Acme", None),
+])
+def test_prefilter_rules(title, company, expect):
+    from board.fetch.base import RawJob
+    pre = prefilter.Prefilter(START, 4)
+    job = RawJob(company, "greenhouse", "1", title, "New York, NY", "u", dates.from_iso(iso(timedelta(days=1)), "first_published"))
+    got = pre(job)
+    assert (got[0] if got else None) == expect, (title, got)
+
+
+# ---- rate limits, shared Workday limit, server-side keyword queries ---------------------------------------------------
+
+def test_429_is_retried_with_backoff_then_succeeds(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    sleeps, calls = [], []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout=0):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {"Retry-After": "7"} if len(calls) == 1 else {}, None)
+        return Resp(b'{"ok": true}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(base.time, "sleep", lambda s: sleeps.append(s))
+    assert base.http_json("https://example.test/x") == {"ok": True}
+    assert len(calls) == 3 and sleeps[0] >= 7 and 4 <= sleeps[1] < 5.1        # Retry-After honoured, then 2 * 2 ** 1 + jitter
+
+
+def test_429_gives_up_after_three_retries_with_rate_limited(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def fake_open(req, timeout=0):
+        calls.append(1)
+        raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    with pytest.raises(base.RateLimited):
+        base.http_json("https://example.test/x")
+    assert len(calls) == 4                                                      # the first try plus 3 retries
+
+
+def test_all_workday_hosts_share_one_concurrency_limit():
+    a = base._sem("expedia.wd108.myworkdayjobs.com")
+    b = base._sem("forrester.wd501.myworkdayjobs.com")
+    assert a is b and base._limit_key("x.wd5.myworkdayjobs.com") == ("workday", 4)
+    assert base._sem("boards-api.greenhouse.io") is not a and base._limit_key("boards-api.greenhouse.io")[1] == base.PER_HOST
+
+
+def test_keywords_come_from_config_and_full_uses_an_empty_query(monkeypatch):
+    from board import config as cfg
+    assert "finance" in ats._keywords({}) and "FP&A" in ats._keywords({}) and len(ats._keywords({})) >= 8
+    assert ats._keywords({"full": True}) == [""]
+    seen = []
+
+    def fake(url, data=None, **kw):
+        seen.append((data or {}).get("searchText"))
+        return {"total": 0, "jobPostings": []}
+
+    monkeypatch.setattr(ats, "http_json", fake)
+    wd = {"name": "W", "tenant": "w", "wd": "5", "site": "ext"}
+    ats.list_workday(wd, START, base.RawStore(None))
+    assert seen == cfg.filters_config()["fetch"]["keywords"]                      # server-side searchText, one query per keyword
+    seen.clear()
+    ats.list_workday({**wd, "full": True}, START, base.RawStore(None))
+    assert seen == [""]
+
+
+def test_workday_results_from_several_queries_are_deduped_by_job_id(monkeypatch):
+    def fake(url, data=None, **kw):
+        kw_ = data["searchText"]
+        posts = [{"title": "Financial Analyst", "externalPath": "/job/same", "locationsText": "San Jose, CA", "postedOn": "Posted Today"}]
+        if kw_ == "pricing":
+            posts.append({"title": "Pricing Analyst", "externalPath": "/job/other", "locationsText": "San Jose, CA", "postedOn": "Posted Today"})
+        return {"total": len(posts), "jobPostings": posts}
+
+    monkeypatch.setattr(ats, "http_json", fake)
+    raw, jobs = ats.list_workday({"name": "W", "tenant": "w", "wd": "5", "site": "ext"}, START, base.RawStore(None))
+    assert raw == 2 and sorted(j.ext_id for j in jobs) == ["/job/other", "/job/same"]
+
+
+def test_netflix_entry_now_has_an_eightfold_domain():
+    from board import config as cfg
+    entry = next(c for c in cfg.companies_config() if c["name"] == "Netflix")
+    b = boards.parse_board(entry)
+    assert b["ats"] == "eightfold" and b["domain"] == "netflix.com" and b["host"] == "explore.jobs.netflix.net"
+
+
+def test_time_spent_queued_behind_a_shared_limit_does_not_count_against_the_board_limit():
+    import time as _t
+    base.set_deadline(0.2)
+    base.credit_wait(1.0)                       # waited a second for a Workday slot
+    _t.sleep(0.3)
+    base.check_deadline()                       # still inside the limit: only request time counts
+    assert not base.was_partial()
+    base.set_deadline(0.05)
+    _t.sleep(0.1)
+    with pytest.raises(base.BoardTimeout):
+        base.check_deadline()
+    base.set_deadline(None)
+
+
+def test_rate_limited_boards_get_a_cooldown_pass_and_only_then_count_as_failed(monkeypatch, tmp_path):
+    from board import fetch as fetch_pkg
+    monkeypatch.setattr(fetch_pkg, "load_boards", lambda only=None: [
+        {"name": "Flaky", "ats": "greenhouse", "key": "flaky"}, {"name": "Stuck", "ats": "greenhouse", "key": "stuck"},
+        {"name": "Fine", "ats": "greenhouse", "key": "fine"}])
+    attempts = {"flaky": 0}
+    slept = []
+
+    def fake(url, data=None, **kw):
+        if "boards/flaky/jobs/" in url or "boards/fine/jobs/" in url:
+            return {"content": "d"}
+        if "boards/flaky/jobs" in url:
+            attempts["flaky"] += 1
+            if attempts["flaky"] == 1:
+                raise base.RateLimited("HTTP 429 after 3 retries")
+            return {"jobs": [gh_job(1, "Financial Analyst", first=iso(timedelta(days=1)))]}
+        if "boards/stuck/jobs" in url:
+            raise base.RateLimited("HTTP 429 after 3 retries")
+        return {"jobs": [gh_job(2, "FP&A Analyst", first=iso(timedelta(days=1)))]}
+
+    monkeypatch.setattr(ats, "http_json", fake)
+    monkeypatch.setattr(fetch_pkg.time, "sleep", lambda s: slept.append(s))
+    res = fetch_all(START, raw_dir=tmp_path / "raw", history=tmp_path / "none.tsv")
+    assert sorted(j.title for j in res.jobs) == ["FP&A Analyst", "Financial Analyst"]          # Flaky recovered on the second pass
+    assert [b.name for b in res.failed] == ["Stuck"] and "cool-down" in res.failed[0].note
+    assert slept and slept[0] == 60

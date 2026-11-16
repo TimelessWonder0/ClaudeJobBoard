@@ -10,7 +10,8 @@ from openpyxl import load_workbook
 from board import config, excel, funnel, ingest, pipeline
 from board.models import HistoryRow
 
-from .test_regression_2026_10_29 import FIX, KEPT, ROWS, TODAY, install_fakes, jd_text
+from .helpers import raw_job, run_jobs
+from .test_regression_2026_10_29 import KEPT, ROWS, TODAY, jd_text
 
 NEG = funnel.NegativeTitles()
 REL = funnel.FinanceRelevance()
@@ -104,49 +105,30 @@ def test_step3_location(location, expect):
     assert (d.rule if d else None) == expect
 
 
-# ---- the 17-row regression, through the whole funnel -------------------------------------------------------------------
+# ---- the 17-row regression, through the whole pipeline -----------------------------------------------------------------
+
+EXTRA = [      # postings that must be dropped at specific steps
+    ("Acme", "Financial Analyst", "San Jose, CA", "https://x.example/old", date(2026, 10, 20)),                     # posted 9 days ago
+    ("Acme", "Financial Analyst", "London, UK", "https://x.example/london", TODAY),
+    ("Acme", "Financial Analyst", "Remote", "https://x.example/rem", TODAY),
+    ("Acme", "Software Engineer", "San Jose, CA", "https://x.example/eng", TODAY),
+    ("Acme", "Tax Analyst", "San Jose, CA", "https://x.example/tax", TODAY),
+    ("Acme", "Operations Coordinator", "San Jose, CA", "https://x.example/ops", TODAY),
+    ("Acme", "Treasury Analyst", "San Jose, CA", "https://x.example/treas", TODAY),
+]
+
 
 @pytest.fixture
 def fworld(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "jobs_dir", lambda: tmp_path / "jobs")
     monkeypatch.setattr(config, "applications_dir", lambda: tmp_path / "applications")
-    cols = ["url", "first_seen", "portal", "title", "company", "status", "location", "fingerprint", "posted_at", "trust_score",
-            "trust_flags", "normalized_company", "requisition_id", "language", "listing_key"]
-    lines = ["\t".join(cols)]
-    by_row = {}
-    for r in ROWS:
-        lines.append("\t".join([r["url"], "2026-10-29", r["company"], r["title"], r["company"], "added", r["location"]] + [""] * 8))
-        key = ingest.job_id(HistoryRow(url=r["url"]))
-        by_row[r["row"]] = key
-        folder = tmp_path / "jobs" / f"{key}_x"
-        folder.mkdir(parents=True)
-        (folder / "JD.md").write_text("# t\n\n- Source: fetch-jd\n\n---\n" + jd_text(r["row"]), encoding="utf-8")
-    # extra postings that must be dropped at specific steps
-    extra = [
-        ("https://x.example/old", "Financial Analyst", "Acme", "San Jose, CA", "2026-10-20"),
-        ("https://x.example/london", "Financial Analyst", "Acme", "London, UK", "2026-10-29"),
-        ("https://x.example/rem", "Financial Analyst", "Acme", "Remote", "2026-10-29"),
-        ("https://x.example/eng", "Software Engineer", "Acme", "San Jose, CA", "2026-10-29"),
-        ("https://x.example/tax", "Tax Analyst", "Acme", "San Jose, CA", "2026-10-29"),
-        ("https://x.example/ops", "Operations Coordinator", "Acme", "San Jose, CA", "2026-10-29"),
-        ("https://x.example/treas", "Treasury Analyst", "Acme", "San Jose, CA", "2026-10-29"),
-    ]
-    for url, title, comp, loc, posted in extra:
-        lines.append("\t".join([url, "2026-10-29", comp, title, comp, "added", loc, "", posted] + [""] * 6))
-    hist = tmp_path / "scan-history.tsv"
-    hist.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return tmp_path, hist, by_row
+    jobs = [raw_job(r["company"], r["title"], r["location"], r["url"], jd_text(r["row"]), day=TODAY) for r in ROWS]
+    jobs += [raw_job(c, t, loc, url, "Basic Qualifications:\n- 1 year of experience in finance.", day=d) for c, t, loc, url, d in EXTRA]
+    return tmp_path, jobs
 
 
-def run_funnel(fworld, monkeypatch, classify=None, **kw):
-    tmp_path, hist, by_row = fworld
-    scores = {r: 3.5 for r in KEPT}
-    install_fakes(monkeypatch, tmp_path, by_row, scores=scores, calls=[])
-    verdicts = classify or {}
-    monkeypatch.setattr(pipeline.Gate, "classify", staticmethod(
-        lambda items, cache, cfg: ({k: verdicts[d] for k, d in ((k, disp.split(" - ")[0]) for k, disp in items) if d in verdicts},
-                                   {"titles": len(items), "calls": 1, "cached": 0, "failed_calls": 0, "uncapped_titles": 0})))
-    return pipeline.run(today=TODAY, history=hist, fetch=False, out_dir=tmp_path / "out", state_dir=tmp_path / "state", **kw)
+def run_funnel(fworld, monkeypatch, **kw):
+    tmp_path, jobs = fworld
+    return run_jobs(tmp_path, monkeypatch, jobs, TODAY, **kw)
 
 
 def by_title(res):
@@ -161,73 +143,91 @@ def by_title(res):
 
 
 def test_17_row_regression_through_the_funnel(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     where = {r["row"]: by_title(res).get(r["title"]) for r in ROWS}
-    senior_or_offtrack = {2, 3, 4, 6, 9, 10, 12, 13, 17}
-    for row in senior_or_offtrack:
-        assert where[row][0][:2] == ("dropped", 4), (row, where[row])                 # all dropped by step 4, by title alone
-    kind, step, why = where[7][0]
-    assert (kind, step) == ("hidden", 6) and "3+ years required" in why                  # 3+ years: step 6, from the JD
-    assert where[11][0][:3] == ("dropped", 5, "accounting track")                         # "Leo Accounting PMO": accounting track
+    for row in (11, 17):                                                          # accounting PMO, Account Executive: dropped by title alone
+        assert where[row][0][:2] == ("dropped", 4), (row, where[row])
+    assert where[11][0][2].startswith("Wrong function") and "Account Executive" in where[17][0][2]
+    assert where[13][0][:3] == ("hidden", 5, "title not on list")                  # finance-ish title off the list: hidden WITH an ID
     shown_titles = {j["title"] for j in res["shown"]}
-    assert {r["title"] for r in ROWS if r["row"] in KEPT} - shown_titles == {"Equity Research Associate, Software - Small & Mid-Cap"} \
-        or {r["title"] for r in ROWS if r["row"] in KEPT} <= shown_titles
-    assert not any(any(w in t.lower() for w in ("senior", "sr.", "lead")) for t in shown_titles)
+    assert {r["title"] for r in ROWS if r["row"] in KEPT} <= shown_titles
     assert {"Equity Research Associate, Software - Small & Mid-Cap", "Investment Analyst"} <= shown_titles
+    assert "Benefits Financial Analyst" in shown_titles                             # 3 years is inside the limit now
 
 
 def test_extra_postings_drop_at_the_right_step(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     t = by_title(res)
     assert t["Software Engineer"][0][:2] == ("dropped", 4)
-    assert t["Tax Analyst"][0][:2] == ("dropped", 5) and t["Tax Analyst"][0][2] == "accounting track"
-    assert t["Operations Coordinator"][0][:2] == ("dropped", 5) and "Not finance-adjacent" in t["Operations Coordinator"][0][2]
+    assert t["Tax Analyst"][0][:2] == ("dropped", 4) and t["Tax Analyst"][0][2].startswith("Wrong function")
+    assert t["Operations Coordinator"][0][:2] == ("dropped", 5) and t["Operations Coordinator"][0][2] == "title not on list"
     assert "Treasury Analyst" in {j["title"] for j in res["shown"]}
-    reasons = {d["reason"] for d in res["dropped"] if d["step"] in (2, 3)}
-    assert any("days ago" in r for r in reasons) and "Outside the 8 metros" in reasons and "Fully remote" in reasons
+    reasons = {d["reason"] for d in res["dropped"] if d["step"] == 3}
+    assert "Outside the target metros" in reasons and "Fully remote" in reasons
+    steps = {s["step"]: s for s in res["funnel"]["steps"]}
+    assert steps[2]["in"] - steps[2]["out"] == 1                                   # the posting from 9 days ago, counted not listed
 
 
 def test_counts_are_consistent_and_never_increase(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     f = res["funnel"]
     for name, row in f["companies"].items():
         seq = [row[s] for s in funnel.STAGES]
         assert seq == sorted(seq, reverse=True), (name, row)
     tot = f["totals"]
-    assert tot["pulled"] == len(ROWS) + 7 and tot["after_fit"] == len(res["shown"])
+    assert tot["pulled"] == len(ROWS) + len(EXTRA) and tot["after_fit"] == len(res["shown"])
     steps = {s["step"]: s for s in f["steps"]}
     assert steps[4]["in"] - steps[4]["out"] == f["dropped_by_step"][4]
-    # every posting is either standing at the end or recorded as dropped with a step and a reason
-    assert tot["pulled"] == len(res["shown"]) + len(res["dropped"]) + len(res["hidden"])
+    # every posting is either standing at the end, dropped on its date (counted), or recorded as dropped / hidden with a reason
+    date_dropped = steps[2]["in"] - steps[2]["out"]
+    assert tot["pulled"] == len(res["shown"]) + len(res["dropped"]) + len(res["hidden"]) + date_dropped
     assert all(d["reason"] and d["step"] for d in res["dropped"])
 
 
-def test_claude_failure_keeps_the_title_with_a_flag(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={})                       # no verdicts returned
-    assert "Operations Coordinator" in {j["title"] for j in res["shown"]}
-    flags = next(j["flags"] for j in res["shown"] if j["title"] == "Operations Coordinator")
-    assert "finance relevance unverified" in flags
+def test_finance_ish_title_not_on_the_list_is_hidden_with_an_id_but_others_are_just_dropped(fworld, monkeypatch):
+    res = run_funnel(fworld, monkeypatch)
+    hidden = {j["title"]: j for j in res["hidden"]}
+    assert "Senior Business Intelligence Analyst - Corporate Finance" in hidden        # has "analyst" and "finance"
+    assert "Operations Coordinator" not in hidden                                       # no finance-ish word: dropped, in the CSV only
+    assert hidden["Senior Business Intelligence Analyst - Corporate Finance"]["id"]
+
+
+def test_default_run_makes_no_claude_calls(fworld, monkeypatch):
+    import shutil
+    import subprocess
+
+    def boom(*a, **k):
+        raise AssertionError(f"the default pipeline called an external command: {a[:1]}")
+
+    seen = []
+    real_run = subprocess.run
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: seen.append(name) or None)
+    monkeypatch.setattr(subprocess, "run", lambda args, *a, **k: boom(args) if "claude" in str(args).lower() else real_run(args, *a, **k))
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    res = run_funnel(fworld, monkeypatch)
+    assert res["gate"] == {"enabled": False} and res["shown"]
+    assert "claude" not in seen
 
 
 def test_samples_are_random_but_repeatable_and_capped_at_25(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     s = res["funnel"]["samples"]
-    assert 0 < len(s["4"]) <= 25 and len(s["5"]) == 3
-    res2 = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    assert 0 < len(s["4"]) <= 25 and len(s["5"]) == 1
+    res2 = run_funnel(fworld, monkeypatch)
     assert res2["funnel"]["samples"] == s
     text = "\n".join(pipeline.format_samples(res))
     assert "25 RANDOM TITLES DROPPED AT STEP 4" in text and "STEP 5" in text
 
 
 def test_dropped_csv_lists_every_dropped_row(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     out = fworld[0] / "out" / "Dropped_2026-10-29.csv"
     rows = list(csv.DictReader(open(out, encoding="utf-8-sig")))
     assert len(rows) == len(res["dropped"]) + len(res["hidden"]) and {"step", "reason", "title", "url"} <= set(rows[0])
 
 
 def test_excel_funnel_and_hidden_sheets(fworld, monkeypatch):
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     receipt = {"scanned": 3, "found": 500, "filtered": 120, "added": 380, "errors": [{"company": "Netflix", "error": "HTTP 429"}]}
     res["funnel"]["scan"] = pipeline._scan_summary(receipt)
     out = excel.write_outputs(res, now=datetime(2026, 10, 29, 9, 0), out_dir=fworld[0] / "out", state_dir=fworld[0] / "state")
@@ -237,21 +237,21 @@ def test_excel_funnel_and_hidden_sheets(fworld, monkeypatch):
     header = next(r for r in fv if r and r[0] == "Company")
     assert header == ["Company", "Pulled", "After date", "After location", "After titles", "After finance", "After years", "After fit"]
     total = next(r for r in fv if r and r[0] == "TOTAL")
-    assert total[1] == len(ROWS) + 7 and total[-1] == len(res["shown"])
+    assert total[1] == len(ROWS) + len(EXTRA) and total[-1] == len(res["shown"])
     assert any(r and r[0] == "Boards that errored" and r[1] == 1 for r in fv) and any(r and "Netflix" in str(r[0]) for r in fv)
     hs = wb["Hidden"]
     hh = [c.value for c in hs[1]]
     assert "Step" in hh
     steps = {hs.cell(row=r, column=hh.index("Step") + 1).value for r in range(2, hs.max_row + 1)}
-    assert {"4 title", "5 finance relevance", "6 experience / degree / license"} <= steps
-    # rows dropped before the JD stage have no ID; rows judged on the JD do
+    assert {"3 location", "4 title", "5 finance relevance"} <= steps
+    # rows dropped before the JD stage have no ID; rows with a JD (or a finance-ish unlisted title) do
     ids = {hs.cell(row=r, column=1).value for r in range(2, hs.max_row + 1)}
     assert None in ids and any(i is not None for i in ids)
 
 
 def test_hidden_sheet_cap_points_to_the_csv(fworld, monkeypatch):
     monkeypatch.setattr(funnel, "funnel_config", lambda: {**config.load_yaml("funnel.yaml"), "hidden_sheet_max_rows": 5})
-    res = run_funnel(fworld, monkeypatch, classify={"Operations Coordinator": "drop"})
+    res = run_funnel(fworld, monkeypatch)
     out = excel.write_outputs(res, now=datetime(2026, 10, 29, 9, 0), out_dir=fworld[0] / "out", state_dir=fworld[0] / "state")
     wb = load_workbook(out["master"])
     assert wb["Hidden"].max_row == 6

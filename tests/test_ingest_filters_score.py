@@ -86,10 +86,13 @@ def test_ambiguous_cases_flag_but_do_not_hide():
     assert any("may be required" in f for f in j.flags)      # low-confidence years only flag
 
 
-def test_senior_titles_are_hidden_not_flagged():
+def test_senior_titles_are_decided_by_years_not_hidden_by_title():
     j = _job(_row(title="Senior Financial Analyst"), "Basic Qualifications:\n- 2 years of experience.")
     apply_filters(j, extract(j.jd_text, j.location))
-    assert any(r.rule == "title" for r in j.reasons)
+    assert not j.hidden and any(f.startswith("senior title") for f in j.flags)
+    j = _job(_row(title="Senior Financial Analyst"), "Basic Qualifications:\n- 5 years of experience.")
+    apply_filters(j, extract(j.jd_text, j.location))
+    assert any(r.rule == "years_required" for r in j.reasons)
 
 
 def test_quant_title_hides():
@@ -120,5 +123,8 @@ def test_score_ranks_closer_fit_higher_and_stays_in_range():
     assert 0 <= weak.score < strong.score <= 100
 
 
-def test_weights_in_scoring_yaml_sum_to_100():
-    assert sum(config.scoring_config()["weights"].values()) == 100
+def test_points_in_scoring_yaml_sum_to_100():
+    cfg = config.scoring_config()
+    assert sum(cfg["points"].values()) == 100
+    assert cfg["points"] == {"role_fit": 35, "level_fit": 20, "skills": 15, "training": 15, "future_facing": 10, "location": 5}
+    assert not any(k in cfg for k in ("weights", "company_priority_scores", "freshness_floor"))      # size, priority, freshness: gone

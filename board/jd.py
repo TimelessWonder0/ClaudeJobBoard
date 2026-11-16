@@ -211,6 +211,14 @@ def read_cached(folder: Path) -> tuple[str, str] | None:
     return body.strip(), source
 
 
+def save_jd(job: Job, text: str, source: str = "api") -> None:
+    """A JD the ATS API already returned with the listing: write jobs/<id>_<company>_<title>/JD.md and fill the job."""
+    folder = job_folder(job.id, job.company, job.title)
+    job.jd_dir, job.jd_text, job.jd_source = folder, text, source
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "JD.md").write_text(_header(job, source) + _SEP + text + "\n", encoding="utf-8")
+
+
 def load_or_fetch(job: Job, refresh: bool = False, fetch: bool = True) -> None:
     """Fill job.jd_text / jd_source / jd_dir, writing JD.md on a fresh fetch."""
     folder = job_folder(job.id, job.company, job.title)

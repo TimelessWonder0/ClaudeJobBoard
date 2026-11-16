@@ -7,16 +7,24 @@ survive the date, metro and title filters. The date field each ATS uses is named
 from __future__ import annotations
 
 import re
-import time
 import urllib.parse
 from datetime import datetime
 
-from .. import dates
-from .base import NoBoard, RawJob, RawStore, find_salary, http_json, to_text
+from .. import config, dates
+from .base import BoardTimeout, NoBoard, RawJob, RawStore, find_salary, http_json, polite_sleep, to_text
 
 
 def _q(s: str) -> str:
     return urllib.parse.quote(s)
+
+
+def _keywords(b) -> list[str]:
+    """Server-side search queries (fetch.keywords in filters.yaml); results are merged and deduped by job id.
+    `full` (python -m board run --full) pulls everything with an empty query, for testing."""
+    if b.get("full"):
+        return [""]
+    fetch_cfg = config.filters_config()["fetch"]
+    return list(fetch_cfg["workday_keywords"] if b.get("ats") == "workday" else fetch_cfg["keywords"])
 
 
 # Greenhouse. Date: `first_published` (the list endpoint returns it, so no per-job call is needed for the date).
@@ -89,15 +97,13 @@ def list_ashby(b, start: datetime, store: RawStore):
 
 # Workday. Date: `postedOn` ("Posted Today" / "Posted 3 Days Ago" / "Posted 30+ Days Ago") turned into a date.
 # Searches are keyword based (the endpoint pages 20 at a time) and merged by `externalPath`.
-WD_KEYWORDS = ["finance", "FP&A", "financial analyst", "pricing", "deal desk", "strategic finance"]
-
-
 def list_workday(b, start: datetime, store: RawStore):
     t, n, site = b["tenant"], b["wd"], b["site"]
     host = f"{t}.wd{n}.myworkdayjobs.com"
     api = f"https://{host}/wday/cxs/{t}/{site}/jobs"
     seen: dict[str, dict] = {}
-    for kw in WD_KEYWORDS:
+    cap = 5000 if b.get("full") else 1000
+    for kw in _keywords(b):
         off, total = 0, None
         while True:
             try:
@@ -118,7 +124,7 @@ def list_workday(b, start: datetime, store: RawStore):
                 if p.get("externalPath"):
                     seen[p["externalPath"]] = p
             off += 20
-            if not posts or off >= total or off >= 1000:
+            if not posts or off >= total or off >= cap:
                 break
     out = []
     for path, p in seen.items():
@@ -142,17 +148,20 @@ def detail_workday(job: RawJob, store: RawStore) -> None:
 def list_smartrecruiters(b, start: datetime, store: RawStore):
     cid = b["key"]
     seen: dict[str, dict] = {}
-    for kw in ("finance", "FP&A", "financial analyst", "pricing"):
-        off = 0
-        while off < 500:
-            data = http_json(f"https://api.smartrecruiters.com/v1/companies/{cid}/postings?limit=100&offset={off}&q={_q(kw)}",
-                             store=store if off == 0 else None, tag=f"smartrecruiters_{cid}_{kw}")
-            content = data.get("content") or []
-            for p in content:
-                seen[p["id"]] = p
-            off += 100
-            if off >= data.get("totalFound", 0) or not content:
-                break
+    try:
+        for kw in _keywords(b):
+            off = 0
+            while off < 500:
+                data = http_json(f"https://api.smartrecruiters.com/v1/companies/{cid}/postings?limit=100&offset={off}&q={_q(kw)}",
+                                 store=store if off == 0 else None, tag=f"smartrecruiters_{cid}_{kw}")
+                content = data.get("content") or []
+                for p in content:
+                    seen[p["id"]] = p
+                off += 100
+                if off >= data.get("totalFound", 0) or not content:
+                    break
+    except BoardTimeout:                  # keep what was listed; the board is reported as partial
+        pass
     if not seen:
         raise NoBoard("no postings")
     out = []
@@ -177,24 +186,23 @@ def detail_smartrecruiters(job: RawJob, store: RawStore) -> None:
 
 
 # Amazon. Date: `posted_date` ("November 11, 2026"), day precision. The list carries the description.
-AMZ_KW = ["financial analyst", "finance analyst", "FP&A", "pricing analyst", "strategic finance", "business finance",
-          "corporate development", "finance associate"]
-
-
 def list_amazon(b, start: datetime, store: RawStore):
     seen: dict[str, dict] = {}
-    for kw in AMZ_KW:
-        off = 0
-        while off < 1000:
-            res = http_json(f"https://www.amazon.jobs/en/search.json?base_query={_q(kw)}&country=USA&result_limit=100"
-                            f"&offset={off}&sort=recent", timeout=60, store=store if off == 0 else None,
-                            tag=f"amazon_{kw}")
-            jobs = res.get("jobs") or []
-            for j in jobs:
-                seen[j["id_icims"]] = j
-            off += 100
-            if len(jobs) < 100 or off >= res.get("hits", 0):
-                break
+    try:
+        for kw in _keywords(b):
+            off = 0
+            while off < 1000:
+                res = http_json(f"https://www.amazon.jobs/en/search.json?base_query={_q(kw)}&country=USA&result_limit=100"
+                                f"&offset={off}&sort=recent", timeout=60, store=store if off == 0 else None,
+                                tag=f"amazon_{kw}")
+                jobs = res.get("jobs") or []
+                for j in jobs:
+                    seen[j["id_icims"]] = j
+                off += 100
+                if len(jobs) < 100 or off >= res.get("hits", 0):
+                    break
+    except BoardTimeout:                  # keep what was listed; the board is reported as partial
+        pass
     out = []
     for j in seen.values():
         desc = "\n".join([to_text(j.get("description")), "Basic qualifications:\n" + to_text(j.get("basic_qualifications")),
@@ -207,26 +215,26 @@ def list_amazon(b, start: datetime, store: RawStore):
 
 
 # Eightfold. Date: `postedTs` (epoch seconds).
-EF_KW = ["finance", "FP&A", "financial analyst", "pricing", "strategic finance", "corporate development"]
-
-
 def list_eightfold(b, start: datetime, store: RawStore):
     host, domain = b["host"], b["domain"]
     seen: dict[str, dict] = {}
-    for kw in EF_KW:
-        pos_start = 0
-        while pos_start < 300:
-            res = http_json(f"https://{host}/api/pcsx/search?domain={domain}&query={_q(kw)}&location=United%20States"
-                            f"&start={pos_start}&sort_by=timestamp", timeout=45, store=store if pos_start == 0 else None,
-                            tag=f"eightfold_{host}_{kw}")
-            pos = (res.get("data") or {}).get("positions") or []
-            time.sleep(1.0)                        # Eightfold rate-limits (429)
-            for p in pos:
-                seen[str(p["id"])] = p
-            pos_start += len(pos)
-            oldest = min((p.get("postedTs", 0) for p in pos), default=0)
-            if not pos or (oldest and (start.timestamp() - oldest) / 86400 > 30):
-                break
+    try:
+        for kw in _keywords(b):
+            pos_start = 0
+            while pos_start < 300:
+                res = http_json(f"https://{host}/api/pcsx/search?domain={domain}&query={_q(kw)}&location=United%20States"
+                                f"&start={pos_start}&sort_by=timestamp", timeout=45, store=store if pos_start == 0 else None,
+                                tag=f"eightfold_{host}_{kw}")
+                pos = (res.get("data") or {}).get("positions") or []
+                polite_sleep(1.0)                      # Eightfold rate-limits (429)
+                for p in pos:
+                    seen[str(p["id"])] = p
+                pos_start += len(pos)
+                oldest = min((p.get("postedTs", 0) for p in pos), default=0)
+                if not pos or (oldest and (start.timestamp() - oldest) / 86400 > 30):
+                    break
+    except BoardTimeout:                  # keep what was listed; the board is reported as partial
+        pass
     if not seen:
         raise NoBoard("no data")
     out = []
@@ -240,31 +248,32 @@ def list_eightfold(b, start: datetime, store: RawStore):
 
 def detail_eightfold(job: RawJob, store: RawStore) -> None:
     d = job.detail
-    time.sleep(0.5)
+    polite_sleep(0.5)
     det = http_json(f"https://{d['host']}/api/pcsx/position_details?position_id={d['id']}&domain={d['domain']}&hl=en")["data"]
     job.description = to_text(det.get("jobDescription"))
     job.pay = find_salary(job.description)
 
 
 # Oracle HCM. Date: `PostedDate` (a date, day precision).
-ORA_KW = ["finance", "financial analyst", "FP&A", "pricing", "valuation", "investment banking analyst", "research"]
-
-
 def list_oracle(b, start: datetime, store: RawStore):
     host, site = b["host"], b["site"]
     seen: dict[str, dict] = {}
-    for kw in ORA_KW:
-        off = 0
-        while off < 500:
-            u = (f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList"
-                 f"&finder=findReqs;siteNumber={site},keyword=%22{_q(kw)}%22,limit=50,offset={off},sortBy=POSTING_DATES_DESC")
-            res = http_json(u, timeout=60, store=store if off == 0 else None, tag=f"oracle_{host}_{kw}")
-            items = (res.get("items") or [{}])[0].get("requisitionList") or []
-            for r in items:
-                seen[str(r["Id"])] = r
-            off += 50
-            if len(items) < 50:
-                break
+    try:
+        for kw in _keywords(b):
+            off = 0
+            while off < 500:
+                key = f"keyword=%22{_q(kw)}%22," if kw else ""
+                u = (f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList"
+                     f"&finder=findReqs;siteNumber={site},{key}limit=50,offset={off},sortBy=POSTING_DATES_DESC")
+                res = http_json(u, timeout=60, store=store if off == 0 else None, tag=f"oracle_{host}_{kw}")
+                items = (res.get("items") or [{}])[0].get("requisitionList") or []
+                for r in items:
+                    seen[str(r["Id"])] = r
+                off += 50
+                if len(items) < 50:
+                    break
+    except BoardTimeout:                  # keep what was listed; the board is reported as partial
+        pass
     out = []
     for r in seen.values():
         out.append(RawJob(b["name"], "oracle", str(r["Id"]), r.get("Title", ""), r.get("PrimaryLocation", ""),

@@ -288,7 +288,7 @@ def keyword_guidance(jd_text: str, cand: dict) -> dict:
     """JD skill terms split into ones the candidate file supports (mirror them) and ones it does not."""
     corpus = _corpus(cand)
     mirror, unsupported = [], []
-    for group in config.scoring_config()["skills"]:
+    for group in config.scoring_config()["keyword_groups"]:
         mir: set[str] = set()
         uns: set[str] = set()
         for term in group["terms"]:
@@ -386,7 +386,7 @@ def render(num: int, day: date | None = None) -> dict:
     jd_text = review._jd_body(Path(review._jd_for(job["key"]) or ""))
     resume_text = text + "\n" + pdf_text(letter_pdf)
     covered, missing = [], []
-    for group in config.scoring_config()["skills"]:
+    for group in config.scoring_config()["keyword_groups"]:
         in_jd = any(re.search(t, jd_text, re.I) for t in group["terms"])
         if not in_jd:
             continue

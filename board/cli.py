@@ -15,21 +15,25 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="python -m board")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    run = sub.add_parser("run", help="read scan history, fetch JDs, filter, score")
-    run.add_argument("--today", help="override today's date (YYYY-MM-DD), for tests and replays")
-    run.add_argument("--limit", type=int, help="process at most N candidate rows")
+    run = sub.add_parser("run", help="fetch every board, filter, score, write jobs_latest.md and the Excel board (no Claude calls)")
+    run.add_argument("--only", nargs="*", help="company or ats names, e.g. greenhouse Stripe")
     run.add_argument("--refresh", action="store_true", help="refetch JDs even when cached")
-    run.add_argument("--no-fetch", action="store_true", help="use cached JDs only, no network")
-    run.add_argument("--history", type=Path, help="scan-history.tsv path (default: CAREER_OPS_ROOT/data/scan-history.tsv)")
+    run.add_argument("--no-fetch", action="store_true", help="never fetch a JD the API did not return (cached JDs only)")
+    run.add_argument("--no-detail", action="store_true", help="skip per-job detail calls (list data only)")
+    run.add_argument("--history", type=Path, help="scan-history.tsv for the scan.mjs providers (Apple, Google, ...)")
     run.add_argument("--out", type=Path, help="output directory (default: output)")
-    run.add_argument("--workers", type=int, default=4, help="parallel JD fetches")
-    run.add_argument("--top", type=int, default=15, help="rows to print")
+    run.add_argument("--workers", type=int, default=4, help="parallel JD loads")
+    run.add_argument("--top", type=int, default=10, help="roles to print")
     run.add_argument("--state", type=Path, help="state directory (default: state)")
+    run.add_argument("--board-timeout", type=float, help="per-board time limit in seconds (default: fetch.board_time_limit_seconds)")
+    run.add_argument("--full", action="store_true", help="pull every posting from Workday / SmartRecruiters / Amazon / Eightfold / Oracle (no keyword queries); for testing")
     run.add_argument("--no-excel", action="store_true", help="skip the Excel workbooks")
-    run.add_argument("--no-gate", action="store_true", help="skip the career-ops qualification gate (liveness, years, keywords, evaluation)")
-    run.add_argument("--refresh-careerops", action="store_true", help="re-run career-ops evaluations even when cached")
+    run.add_argument("--with-claude", action="store_true",
+                     help="also run the career-ops qualification gate (liveness, evaluation); makes claude calls, off by default")
+    run.add_argument("--scan-receipt", type=Path, help="career-ops scan --json receipt (default: state/last_scan.json)")
     fe = sub.add_parser("fetch", help="fetch every board (Greenhouse/Lever/Ashby/Workday/... APIs), prefilter, write state/fetched.json")
     fe.add_argument("--only", nargs="*", help="company or ats names, e.g. greenhouse Stripe")
+    fe.add_argument("--full", action="store_true", help="pull every posting (no keyword queries); for testing")
     fe.add_argument("--no-detail", action="store_true", help="skip per-job detail calls (list data only)")
     fe.add_argument("--state", type=Path, help="state directory (default: state)")
     fe.add_argument("--history", type=Path, help="scan-history.tsv for the scan.mjs providers")
@@ -38,7 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     tb.add_argument("--date", help="run date (YYYY-MM-DD), default latest")
     tb.add_argument("--out", type=Path)
     tb.add_argument("--state", type=Path)
-    run.add_argument("--scan-receipt", type=Path, help="career-ops scan --json receipt (default: state/last_scan.json)")
     rev = sub.add_parser("review", help="support for the /review command")
     rsub = rev.add_subparsers(dest="rcmd", required=True)
     prep = rsub.add_parser("prepare", help="pick the top rows of today's board and write state/review_packet.json")
@@ -75,32 +78,39 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "apply":
         return _apply(args)
 
+    return _run(args)
+
+
+def _run(args) -> int:
+    import time
+    from . import config, dates, markdown
+    t0 = time.perf_counter()
     try:
-        result = pipeline.run(
-            today=date.fromisoformat(args.today) if args.today else None,
-            limit=args.limit, refresh=args.refresh, fetch=not args.no_fetch,
-            history=args.history, out_dir=args.out, workers=args.workers, gate=not args.no_gate,
-            refresh_careerops=args.refresh_careerops, state_dir=args.state,
-            scan_receipt=excel.load_receipt(args.scan_receipt),
-        )
+        result = pipeline.run(only=set(args.only) if args.only else None, refresh=args.refresh, fetch_missing=not args.no_fetch,
+                              detail=not args.no_detail, history=args.history, out_dir=args.out, state_dir=args.state,
+                              workers=args.workers, with_claude=args.with_claude, board_limit=args.board_timeout, full=args.full)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(pipeline.format_summary(result, top=args.top, samples=False))
+    fetch_info = result["fetch"]
+    if fetch_info["boards"] and len(fetch_info["failed"]) == fetch_info["boards"]:
+        print("error: every board failed; check the internet connection", file=sys.stderr)
+        return 2
+    out = {"ids": {}, "board_nums": [], "board": len(result["shown"]), "hidden": len(result["hidden"]), "new": 0,
+           "snapshot": "", "master": "", "locked": False, "notes": []}
     if not args.no_excel:
         try:
             out = excel.write_outputs(result, out_dir=args.out, state_dir=args.state, scan_receipt=args.scan_receipt)
         except PermissionError as exc:
             print(f"error: could not write the workbook: {exc}", file=sys.stderr)
             return 3
-        print()
-        print(f"Excel: {out['board']} on Board, {out['hidden']} Hidden, {out['new']} new since last run")
-        print(f"  snapshot: {out['snapshot']}")
-        print(f"  master:   {out['master']}")
-        for note in out["notes"]:
-            print(f"  NOTE: {note}")
         _write_last_run(result, out, args.state)
-    print("\n".join(pipeline.format_samples(result)))      # last, so they are easy to find at the end of every run
+    latest, dated = markdown.write(result, out["ids"], out["board_nums"], out_dir=args.out)
+    log_dir = config.ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / f"board_{result['run_date']}.log").write_text(
+        pipeline.format_detail(result, out, time.perf_counter() - t0), encoding="utf-8")
+    print(pipeline.format_console(result, out, latest, top=args.top, seconds=time.perf_counter() - t0, log=log_dir / f"board_{result['run_date']}.log"))
     return 0
 
 
@@ -244,7 +254,7 @@ def _fetch(args) -> int:
     start = dates.run_start()
     raw_dir = config.ROOT / "logs" / "raw" / dates.chicago_date(start).isoformat()
     res = fetch.fetch_all(start, only=set(args.only) if args.only else None, raw_dir=raw_dir, detail=not args.no_detail,
-                          history=args.history)
+                          history=args.history, full=args.full)
     path = fetch.save_result(res, args.state)
     failed = res.failed
     print(f"fetch {dates.chicago_date(start)} window {res.days}d: {len(res.boards)} boards, {len(failed)} failed, "

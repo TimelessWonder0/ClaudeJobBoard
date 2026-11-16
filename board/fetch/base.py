@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import json
+import random
 import re
 import threading
 import time
@@ -17,6 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import config
 from ..dates import Posted
 
 UA = {"User-Agent": "personal-job-scout/2.0", "Accept": "application/json"}
@@ -25,6 +27,41 @@ PER_HOST = 3
 
 class NoBoard(Exception):
     """The board does not exist (HTTP 4xx) or returned nothing usable."""
+
+
+class BoardTimeout(Exception):
+    """The board used up its time limit. Fetchers keep what they already listed; the board is reported as partial."""
+
+
+_tl = threading.local()
+
+
+def set_deadline(seconds: float | None) -> None:
+    """Start a board's clock on this thread (None or 0 = no limit)."""
+    _tl.deadline = time.monotonic() + seconds if seconds else None
+    _tl.partial = False
+
+
+def credit_wait(seconds: float) -> None:
+    """Time spent queued behind a shared concurrency limit does not count against the board's time limit."""
+    if getattr(_tl, "deadline", None) is not None and seconds > 0:
+        _tl.deadline += seconds
+
+
+def check_deadline() -> None:
+    d = getattr(_tl, "deadline", None)
+    if d is not None and time.monotonic() > d:
+        _tl.partial = True
+        raise BoardTimeout("board time limit reached")
+
+
+def was_partial() -> bool:
+    return bool(getattr(_tl, "partial", False))
+
+
+def polite_sleep(seconds: float) -> None:
+    check_deadline()
+    time.sleep(seconds)
 
 
 @dataclass
@@ -41,6 +78,7 @@ class RawJob:
     pay: str = ""
     description: str = ""          # empty until fetch_detail for ATSs whose list has no description
     detail: dict = field(default_factory=dict)   # ATS-specific ids needed by fetch_detail
+    flags: list[str] = field(default_factory=list)
 
 
 class RawStore:
@@ -62,23 +100,52 @@ class RawStore:
         (self.dir / f"{n:05d}_{safe}.json").write_bytes(body)
 
 
-_host_locks: dict[str, threading.Semaphore] = defaultdict(lambda: threading.Semaphore(PER_HOST))
+_limits: dict[str, threading.Semaphore] = {}
 _guard = threading.Lock()
+RATE_LIMIT_RETRIES = 3
+
+
+class RateLimited(Exception):
+    """HTTP 429 persisted through every backoff retry."""
+
+
+def _limit_key(host: str) -> tuple[str, int]:
+    """All *.myworkdayjobs.com hosts share one limit (Workday throttles per client, not per tenant host)."""
+    if host.endswith(".myworkdayjobs.com"):
+        return "workday", int(config.filters_config().get("fetch", {}).get("workday_concurrency", 4))
+    return host, PER_HOST
 
 
 def _sem(host: str) -> threading.Semaphore:
+    key, n = _limit_key(host)
     with _guard:
-        return _host_locks[host]
+        if key not in _limits:
+            _limits[key] = threading.Semaphore(n)
+        return _limits[key]
+
+
+def _backoff(attempt: int, retry_after: str | None) -> float:
+    """2s, 4s, 8s (+ up to 1s of jitter), or the server's Retry-After when it asks for longer."""
+    try:
+        asked = float(retry_after) if retry_after else 0.0
+    except ValueError:
+        asked = 0.0
+    return max(asked, 2.0 * 2 ** (attempt - 1)) + random.random()
 
 
 def http_json(url: str, data=None, timeout: int = 30, retries: int = 1, headers: dict | None = None,
               store: RawStore | None = None, tag: str = "", per_host: int | None = None):
-    """GET (or POST when `data` is given) and parse JSON. 4xx raises NoBoard. Raw body goes to `store`, never stdout."""
+    """GET (or POST when `data` is given) and parse JSON. 4xx raises NoBoard. Raw body goes to `store`, never stdout.
+
+    HTTP 429 is retried up to RATE_LIMIT_RETRIES times with exponential backoff (Retry-After honoured) and does not use up the
+    ordinary retries; if it persists, RateLimited is raised.
+    """
     host = urllib.parse.urlsplit(url).netloc
     last: Exception | None = None
-    attempts, n = retries + 1, 0
+    attempts, n, limited = retries + 1, 0, 0
     while n < attempts:
         n += 1
+        check_deadline()
         try:
             h = dict(UA)
             body = None
@@ -87,20 +154,29 @@ def http_json(url: str, data=None, timeout: int = 30, retries: int = 1, headers:
                 h["Content-Type"] = "application/json"
             if headers:
                 h.update(headers)
+            queued = time.monotonic()
             with _sem(host):
-                with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=h), timeout=timeout) as r:
-                    raw = r.read()
+                credit_wait(time.monotonic() - queued)
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=h), timeout=timeout) as r:
+                        raw = r.read()
+                finally:
+                    if host.endswith(".myworkdayjobs.com"):       # pace the slot so 4 in flight is not 4 back to back
+                        time.sleep(float(config.filters_config().get("fetch", {}).get("workday_delay_seconds", 0)))
             if store and tag:
                 store.save(tag, raw)
             return json.loads(raw.decode("utf-8", "replace"))
         except urllib.error.HTTPError as e:
+            if e.code == 429:
+                limited += 1
+                if limited > RATE_LIMIT_RETRIES:
+                    raise RateLimited(f"HTTP 429 after {RATE_LIMIT_RETRIES} retries") from e
+                polite_sleep(_backoff(limited, e.headers.get("Retry-After") if e.headers else None))
+                n -= 1                                   # a rate-limit wait does not use up an ordinary retry
+                continue
             if e.code in (400, 401, 403, 404, 405, 410, 422):
                 raise NoBoard(f"HTTP {e.code}")
-            if e.code == 429:
-                attempts = max(attempts, n + 1) if n < 5 else attempts
-                time.sleep(8 * n)
             last = e
-            continue
         except Exception as e:          # noqa: BLE001 - network and parse errors all retry the same way
             last = e
         time.sleep(1.5)

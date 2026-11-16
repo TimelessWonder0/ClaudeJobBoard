@@ -10,3 +10,4 @@ __pycache__/
 jobs/
 applications/
 logs/
+state_trial/

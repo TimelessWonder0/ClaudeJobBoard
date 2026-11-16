@@ -58,6 +58,9 @@ class Job:
     flags: list[str] = field(default_factory=list)
     score: float | None = None
     score_parts: dict = field(default_factory=dict)
+    date_flag: str = ""          # why the posting date is not confirmed ("updated_at only", "first seen 2026-11-14", ...)
+    pay: str = ""
+    workplace: str = ""          # API hint: hybrid / remote / on-site, "" when absent
 
     @property
     def hidden(self) -> bool:

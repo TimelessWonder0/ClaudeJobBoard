@@ -47,7 +47,7 @@ def test_duplicates_are_merged_and_the_scannable_entry_survives():
     for kept in ("Netflix", "Uber", "DoorDash", "Expedia", "Vanguard", "EY", "TCS", "GLG", "Block", "Rocket Companies", "Affirm",
                  "Hancock Whitney", "M&T Bank", "Royal Bank of Canada"):
         assert kept in BY_NAME, kept
-    assert BY_NAME["Block"]["scan_status"] == "OK" and BY_NAME["Netflix"]["scan_status"] == "OK"
+    assert BY_NAME["Block"]["scan_status"] == "OK" and "Netflix" in BY_NAME
     assert len(NAMES) == len(set(NAMES))
 
 
@@ -61,3 +61,12 @@ def test_probe_finds_are_scannable_with_a_parsed_endpoint():
                    ("eBay", "workday")):
         assert BY_NAME[n]["scan_status"] == "OK"
         assert parse_board(BY_NAME[n])["ats"] == ats, n
+
+
+def test_blocked_boards_are_manual_and_listed_on_the_check_manually_sheet():
+    from board import excel
+    for n in ("Microsoft", "Netflix", "BDO"):
+        assert BY_NAME[n]["scan_status"] == "manual" and BY_NAME[n]["note"] == "API blocks non-browser clients", n
+    rows = {r["Company"]: r for r in excel.manual_rows()}
+    assert all(n in rows and "API blocks non-browser clients" in rows[n]["ATS"] for n in ("Microsoft", "Netflix", "BDO"))
+    assert BY_NAME["Ardian"]["scan_status"] == "OK"                                  # left as is

@@ -73,11 +73,8 @@ def _num(v) -> float | None:
 
 
 def track_of(title: str, cfg: dict | None = None) -> str:
-    cfg = cfg or config.scoring_config()
-    for t in cfg["tracks"]:
-        if any(re.search(p, title or "", re.I) for p in t["patterns"]):
-            return t["name"]
-    return cfg["track_default"]
+    from .score import track_for
+    return track_for(title, cfg)["name"]
 
 
 def metro_label(key: str) -> str:
@@ -269,6 +266,8 @@ def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict,
         return num, min(found, led) if led else found
 
     def posted_cell(job: dict) -> str:
+        if job.get("date_flag"):
+            return f"unconfirmed: {job['date_flag']}"
         p = job.get("posted") or ""
         return f"~{p}" if p and job.get("date_approx") else p
 
@@ -372,9 +371,9 @@ def rank_key(row: dict):
 def manual_rows() -> list[dict]:
     out = []
     for c in config.companies_config():
-        if c.get("scan_status") == "not scannable":
+        if c.get("scan_status") in ("not scannable", "manual"):
             out.append({"Company": c["name"], "Group": c.get("category", ""), "Metros": ", ".join(c.get("metros", [])),
-                        "Priority": c.get("priority"), "ATS": c.get("ats", ""),
+                        "Priority": c.get("priority"), "ATS": c.get("ats", "") + (f" ({c['note']})" if c.get("note") else ""),
                         "Careers Page": c.get("careers_url") or "", "Careers Page__link": c.get("careers_url") or ""})
     out.sort(key=lambda r: (r["Priority"] or 9, r["Company"]))
     return out
@@ -614,8 +613,10 @@ def write_outputs(result: dict, now: datetime | None = None, out_dir: Path | Non
             notes.append(f"{label} is open in Excel; saved a timestamped copy instead: {path}")
     if master_locked:
         notes.append("Close JobBoard_Master.xlsx and run again to update it. Your statuses in it are untouched.")
+    ids = {key: rec["id"] for key, rec in ledger.jobs.items()}
     return {"snapshot": str(snap), "master": str(master_written), "locked": snap_locked or master_locked,
-            "notes": notes, "board": len(board_rows), "hidden": len(hidden_rows), "new": len(new_ids)}
+            "notes": notes, "board": len(board_rows), "hidden": len(hidden_rows), "new": len(new_ids),
+            "ids": ids, "board_nums": [r["ID"] for r in sorted(board_rows, key=rank_key)]}
 
 
 # ----------------------------------------------------------------------------------------------

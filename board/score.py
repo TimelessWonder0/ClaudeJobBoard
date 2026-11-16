@@ -1,9 +1,14 @@
-"""Score a shown job 0-100 from config/scoring.yaml. Pure function of the job and the config."""
+"""Score a shown job 0-100 from config/scoring.yaml. Pure function of the job and the config: no Claude, no web lookups.
+
+Points: role fit 35, level fit 20, skills overlap 15, training signal 15, future-facing 10, location 5.
+Company size and market cap are never used.
+"""
 from __future__ import annotations
 
 import re
 
 from . import config
+from .filters import is_senior
 from .models import Job
 
 
@@ -13,10 +18,17 @@ def _norm(s: str) -> str:
 
 def company_priority(portal: str, company: str, companies: list[dict] | None = None,
                      aliases: dict | None = None) -> int | None:
-    """Priority 1-3 from config/companies.yaml. Matches on the career-ops portal name first, then the company."""
+    """Priority 1-3 from config/companies.yaml. Matches on the portal name first, then the company."""
+    rec = company_record(company, companies, aliases, portal=portal)
+    return rec.get("priority") if rec else None
+
+
+def company_record(company: str, companies: list[dict] | None = None, aliases: dict | None = None,
+                   portal: str = "") -> dict | None:
+    """The companies.yaml entry for a company name (exact, alias, then prefix match), or None."""
     companies = companies if companies is not None else config.companies_config()
     aliases = aliases if aliases is not None else config.scoring_config().get("company_aliases", {})
-    by_norm = {_norm(c["name"]): c["priority"] for c in companies}
+    by_norm = {_norm(c["name"]): c for c in companies}
     for raw in (portal, company):
         n = _norm(raw)
         if not n:
@@ -24,112 +36,102 @@ def company_priority(portal: str, company: str, companies: list[dict] | None = N
         if n in by_norm:
             return by_norm[n]
         for alias, target in aliases.items():
-            if _norm(alias) in n:
-                t = by_norm.get(_norm(target))
-                if t:
-                    return t
-        for cn, pr in by_norm.items():
-            if len(cn) >= 4 and (n.startswith(cn) or cn in n):
-                return pr
+            if _norm(alias) in n and _norm(target) in by_norm:
+                return by_norm[_norm(target)]
+        low = (raw or "").lower().strip()
+        for c in companies:
+            name = c["name"].lower()
+            # a legal-name suffix is fine ("Stripe, Inc."); a longer different word is not ("Totally" must not match "Ally")
+            if len(_norm(name)) >= 4 and re.match(re.escape(name) + r"(?![a-z0-9])", low):
+                return c
     return None
+
+
+def track_for(title: str, cfg: dict | None = None) -> dict:
+    """The track dict {name, letter, points} for a title; first matching track in scoring.yaml wins."""
+    cfg = cfg or config.scoring_config()
+    for t in cfg["tracks"]:
+        if any(re.search(p, title or "", re.I) for p in t["patterns"]):
+            return t
+    return cfg["track_default"]
+
+
+def training_signal(text: str, cfg: dict | None = None) -> tuple[int, list[str]]:
+    """(points, matched phrases) from the training_signal groups. Each group scores once; the total is capped."""
+    cfg = cfg or config.scoring_config()
+    total, phrases = 0, []
+    for group in cfg["training_signal"]:
+        for pat in group["patterns"]:
+            m = re.search(pat, text or "", re.I)
+            if m:
+                total += group["points"]
+                phrases.append(re.sub(r"\s+", " ", m.group(0)).strip().lower())
+                break
+    return min(total, cfg["points"]["training"]), phrases
+
+
+def tier_for(points: float, cfg: dict | None = None) -> str:
+    cfg = cfg or config.scoring_config()
+    t = cfg["tiers"]
+    if points >= t["apply_now"]:
+        return "Apply now"
+    if points >= t["strong"]:
+        return "Strong"
+    if points >= t["stretch"]:
+        return "Stretch"
+    return ""
 
 
 def score_job(job: Job, ext_dict: dict, cfg: dict | None = None) -> None:
     cfg = cfg or config.scoring_config()
-    w = cfg["weights"]
-    total_w = sum(w.values()) or 100.0
+    pts = cfg["points"]
+    title = job.title or ""
+    text = (job.jd_text or "") + "\n" + title
     parts: dict[str, float] = {}
 
-    # title track
-    title = job.title or ""
-    t = cfg["title_default"]
-    for tier in cfg["title_tiers"]:
-        if any(re.search(p, title, re.I) for p in tier["patterns"]):
-            t = tier["score"]
-            break
-    if any(re.search(p, title, re.I) for p in cfg.get("title_offtrack_patterns", [])):
-        t = min(t, cfg["title_offtrack_score"])
-    if re.search(r"\b(senior|sr\.?|lead|principal|staff)\b", title, re.I):
-        t = max(0.0, t - cfg["title_senior_penalty"])
-    parts["title_track"] = t
+    # role fit
+    track = track_for(title, cfg)
+    parts["role_fit"] = min(track["points"], pts["role_fit"])
 
-    # years fit
-    yr = (ext_dict.get("years_required") or None)
-    stretch = False
+    # level fit: the figure that applies to you (route resolved, higher of the readings)
+    yr = ext_dict.get("years_required") or None
     if yr:
-        # the figure that applies to you: route resolved, and the higher of board and career-ops readings
         years = job.years_effective
         if years is None:
             years = yr.get("effective_years")
         if years is None:
             years = yr.get("years_bachelors") if yr.get("years_bachelors") is not None else yr["min_years"]
-        table_score = next(row["score"] for row in cfg["years_table"] if years <= row["max_years"])
-        if yr.get("confidence") == "low":
-            b = cfg["years_low_confidence_blend"]
-            table_score = b * table_score + (1 - b) * cfg["years_unknown"]
-        parts["years_fit"] = table_score
-        stretch = years >= cfg["stretch_years"]
+        level = next((row["points"] for row in cfg["level_table"] if years <= row["max_years"]), 0)
+    elif ext_dict.get("no_experience_needed"):
+        level = pts["level_fit"]
     else:
-        parts["years_fit"] = 1.0 if ext_dict.get("no_experience_needed") else cfg["years_unknown"]
+        level = cfg["level_unstated_points"]
+    if is_senior(title):
+        level -= cfg["senior_penalty"]
+    parts["level_fit"] = max(0, min(level, pts["level_fit"]))
 
-    # skill overlap
-    text = (job.jd_text or "") + "\n" + title
-    skills = cfg["skills"]
-    total = sum(s["weight"] for s in skills) or 1.0
-    hit = 0.0
-    matched: list[str] = []
-    for s in skills:
-        if any(re.search(term, text, re.I) for term in s["terms"]):
-            hit += s["weight"]
-            matched.append(s["name"])
-    parts["skill_overlap"] = min(1.0, (hit / total) / cfg["skill_saturation"]) if job.jd_text else 0.0
-    job.score_parts["skills_matched"] = matched
-    # career-ops keyword-match.mjs coverage, used only when it extracted enough keywords to mean something
-    kw = (job.careerops or {}).get("keywords") or {}
-    co_cfg = config.load_yaml("careerops.yaml")
-    if kw.get("coveragePct") is not None and (kw.get("total") or 0) >= co_cfg.get("keyword_min_terms", 3):
-        b = float(co_cfg.get("keyword_blend", 0.5))
-        parts["skill_overlap"] = (1 - b) * parts["skill_overlap"] + b * float(kw["coveragePct"]) / 100.0
-        job.score_parts["keyword_match_pct"] = kw["coveragePct"]
+    # skills overlap
+    matched = [g["name"] for g in cfg["skills"] if any(re.search(t, text, re.I) for t in g["terms"])] if job.jd_text else []
+    parts["skills"] = min(len(matched) * cfg["skill_points_each"], pts["skills"])
 
-    # metro
-    parts["metro"] = cfg["metro_scores"].get(job.metro, cfg["metro_unknown"]) if job.metro else cfg["metro_unknown"]
+    # training signal
+    train, phrases = training_signal(text, cfg)
+    parts["training"] = train
 
-    # company priority
-    pr = job.company_priority
-    parts["company_priority"] = cfg["company_priority_scores"].get(pr, cfg["company_unknown"]) if pr else cfg["company_unknown"]
+    # future-facing sector, from the static sector_tier in companies.yaml
+    rec = company_record(job.company, portal=job.portal)
+    tier = (rec or {}).get("sector_tier")
+    parts["future_facing"] = min(cfg["future_tier_points"].get(tier, cfg["future_tier_unknown_points"]), pts["future_facing"])
 
-    # freshness
-    max_age = config.filters_config()["days"]
-    if job.age_days is None:
-        f = cfg["freshness_floor"]
+    # location
+    if job.metro:
+        loc = cfg["location_points"].get(job.metro, cfg["default_location_points"])
     else:
-        frac = min(max(job.age_days, 0), max_age) / max_age if max_age else 0
-        f = 1.0 - frac * (1.0 - cfg["freshness_floor"])
-    if job.date_approx:
-        f *= cfg["freshness_approx_multiplier"]
-    parts["freshness"] = f
+        loc = cfg["location_unknown_points"]
+    parts["location"] = min(loc, pts["location"])
 
-    points = sum(parts[k] * w[k] for k in w) * (100.0 / total_w)
-
-    adj = cfg["adjustments"]
-    notes: list[str] = []
-    if job.jd_source == "none":
-        points += adj["jd_not_fetched"]; notes.append("JD not fetched")
-    if job.metro_status == "unknown":
-        points += adj["location_unknown"]; notes.append("location unknown")
-    if stretch:
-        points += adj["stretch"]; notes.append("stretch")
-    if not yr and not ext_dict.get("no_experience_needed"):
-        points += adj["years_not_stated"]; notes.append("years not stated")
-    if ext_dict.get("degree_preferred") and ext_dict["degree_preferred"]["level"] in ("masters", "mba", "phd"):
-        points += adj["degree_masters_preferred"]
-    for c in ext_dict.get("certs", []):
-        if c["status"] == "required":
-            points += adj["cert_required"]; notes.append(f"{c['cert']} required")
-        elif c["status"] == "obtainable":
-            points += adj["cert_obtainable"]
-
-    job.score = round(max(0.0, min(100.0, points)), 1)
-    job.score_parts.update({k: round(v, 2) for k, v in parts.items()})
-    job.score_parts["adjustments"] = notes
+    job.score = round(max(0.0, min(100.0, sum(parts.values()))), 1)
+    job.score_parts = {k: round(v, 1) for k, v in parts.items()}
+    job.score_parts.update({"track": track["name"], "track_letter": track["letter"], "skills_matched": matched,
+                            "training_phrases": phrases, "sector_tier": tier or "unknown"})
+    job.company_priority = rec.get("priority") if rec else None

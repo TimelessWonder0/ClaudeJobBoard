@@ -1,9 +1,11 @@
 """Cheap filters that run on list data, before any per-job detail call, so only survivors cost a request.
 
-Order, cheapest first: date (confirmed old only), location, negative titles, finance title allow-list.
-Returns None to keep a job or `(step, reason)` to drop it. A role with an unconfirmed date is never dropped here for
-its date; an unknown location is kept. Titles dropped by the allow-list that still look finance-ish are reported by the
-caller as "title not on list" so they can be overridden.
+Order, cheapest first: date (confirmed old only), location, negative titles, sales-like / moves-backward / wrong-function
+titles, staffing agencies, finance title allow-list. Returns None to keep a job or `(step, reason)` to drop it.
+A role with an unconfirmed date is never dropped here for its date; an unknown location is kept. A Senior / Sr title is not
+dropped here: the JD stage keeps it only when the required years are `senior_max_required_years` or fewer.
+Titles dropped by the allow-list that still look finance-ish are reported by the caller as "title not on list" so they can
+be overridden.
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import re
 from datetime import datetime
 
 from .. import config, dates
-from ..filters import classify_location, title_is_finance_role
+from ..filters import _SENIOR, classify_location, staffing_company, title_blocked, title_is_finance_role
 from ..funnel import NegativeTitles
 from .base import RawJob
 
@@ -34,12 +36,23 @@ class Prefilter:
             return "location", "Outside the target metros"
         if status == "unknown" and _REMOTE.search(job.location or ""):
             return "location", "Fully remote"
-        hit = self.neg.hit(job.title)
+        hit = self.neg.hit(_SENIOR.sub(" ", job.title or ""))
         if hit:
             return "title", f"Title contains '{hit}'"
+        blocked = title_blocked(job.title, self.fcfg)
+        if blocked:
+            return blocked[0].replace("_", " "), blocked[1]
+        agency = staffing_company(job.company, self.fcfg)
+        if agency:
+            return "staffing", f"Staffing agency ({agency})"
         if not title_is_finance_role(job.title, self.fcfg):
             return "title not on list", "title not on list"
         return None
+
+    def location_bucket(self, job: RawJob) -> str:
+        """Metro key for a job that reached the location step, else "outside" or "unknown"."""
+        status, metro, _all = classify_location(job.location, self.fcfg)
+        return metro if status == "match" else status
 
     @staticmethod
     def worth_review(job: RawJob) -> bool:

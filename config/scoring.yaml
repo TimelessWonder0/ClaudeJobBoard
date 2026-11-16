@@ -1,109 +1,125 @@
-# Score weights for board/score.py. Edit freely; no code change needed.
-# Each component yields 0..1, multiplied by its weight. Weights are points and should sum to 100
-# (the code normalizes if they do not).
+# The 100-point score for board/score.py. Edit freely; no code change needed. Pure Python, no Claude, no web lookups.
+#
+#   role fit        35   Track A or B 35, Track C 25, Track D (any other finance role) 25
+#   level fit       20   0-3 years required 20, 4 years 12, unstated but clearly analyst level 15
+#   skills overlap  15   3 points per skill group found in the JD, max 15
+#   training signal 15   rotational / development program +8, mentorship / training +4, career ladder +3, cap 15
+#   future-facing   10   future 10, adjacent 6, traditional 2 (sector_tier in companies.yaml)
+#   location         5   California 5, Washington or New York 4, other target metro 3
+#
+# Company size and market cap are NOT used anywhere: not to filter, not to score.
 
-weights:
-  title_track: 25     # how close the title is to your target tracks
-  years_fit: 20       # required years vs your ~1.5 years
-  skill_overlap: 25   # resume skills found in the job description
-  metro: 10           # where the job is (Bay Area highest)
-  company_priority: 10
-  freshness: 10
+points:
+  role_fit: 35
+  level_fit: 20
+  skills: 15
+  training: 15
+  future_facing: 10
+  location: 5
 
-# Your experience, used by years_fit.
-candidate:
-  years_experience: 1.5
+# Tiers. A role below min_score is kept out of the Board and listed in Hidden ("score below 50") so it can be overridden.
+tiers: {apply_now: 75, strong: 60, stretch: 50}
+min_score: 50
 
-# --- title_track -------------------------------------------------------------------------------
-# First matching tier wins. Case-insensitive regexes on the title.
-title_tiers:
-  - {score: 1.00, name: core,    patterns: ['financial analyst', 'finance analyst', 'fp&a', 'financial planning', 'pricing analyst', 'deal desk', 'equity research (associate|analyst)', 'associate equity analyst']}
-  - {score: 0.80, name: close,   patterns: ['business finance', 'product finance', 'strategic finance', 'corporate finance', 'finance associate', 'revenue analyst', 'cost analyst', 'pricing finance', 'deal finance']}
-  - {score: 0.60, name: related, patterns: ['investment analyst', 'research associate', 'equity analyst', 'finance (rotation|development)', 'financial (rotation|development)']}
-title_default: 0.30          # title passed career-ops but matches no tier
-# Titles that match a keyword above but are another job (sales, data, engineering...). Capped at title_offtrack_score.
-title_offtrack_patterns: ['account executive', 'sales', 'engineer', 'recruit', 'marketing', 'designer', 'product manager', 'counsel', 'legal', 'business intelligence', 'data scientist']
-title_offtrack_score: 0.20
-title_senior_penalty: 0.15   # subtracted when the title says Senior/Lead/Principal/Staff
+# --- role fit: tracks, first match wins ----------------------------------------------------------------
+# The Board "Track" column shows the track name. `points` is the role-fit score; `letter` is the skill's track letter.
+tracks:
+  # Investment banking analyst roles stay on the board but are Track D (25 role-fit points), never A or B. Listed first so it wins.
+  - {name: Investment Banking, letter: D, points: 25, patterns: ['restructuring', 'm&a\b', 'mergers', 'investment banking', 'coverage (?:analyst|associate)', 'leveraged finance', 'special situations', 'capital markets']}
+  - {name: FP&A,            letter: A, points: 35, patterns: ['fp&a', '\bfpa\b', 'financial planning', 'finance business partner']}
+  - {name: Strategic Finance, letter: B, points: 35, patterns: ['strategic finance', 'business finance', 'product finance', 'biz ?ops.*financ', 'financ.*biz ?ops']}
+  - {name: Pricing,           letter: C, points: 25, patterns: ['pricing', 'deals? desk', 'deal finance', 'revenue analyst']}
+  - {name: Corporate Finance, letter: D, points: 25, patterns: ['corporate finance', 'corporate development', 'treasur', 'investor relations']}
+  - {name: Equity Research,   letter: D, points: 25, patterns: ['equity research', 'equity analyst', 'research associate', 'investment analyst']}
+track_default: {name: Financial Analyst, letter: D, points: 25}
 
-# --- years_fit ---------------------------------------------------------------------------------
-# Piecewise by required years (use years_bachelors when a JD lists degree routes, since you hold a BS).
-years_table:
-  - {max_years: 0,  score: 1.00}
-  - {max_years: 1,  score: 1.00}
-  - {max_years: 2,  score: 0.70}   # a 2-year requirement is a stretch for ~1.5 years (also costs adjustments.stretch)
-  - {max_years: 99, score: 0.00}   # 3+ is hidden by config/filters.yaml; shown only if you override it
-stretch_years: 2             # a required figure at or above this counts as "stretch"
-years_unknown: 0.70          # JD states no years, or JD could not be read
-years_low_confidence_blend: 0.5   # low-confidence years: average of the table score and years_unknown
+# --- level fit ----------------------------------------------------------------------------------------
+# Required years -> points: 0-2 years 20, exactly 3 years 14, 4 years 8. A Senior / Sr title (kept only up to 4 years by the
+# filter) loses senior_penalty more points, never going below 0.
+level_table:
+  - {max_years: 2, points: 20}
+  - {max_years: 3, points: 14}
+  - {max_years: 4, points: 8}
+level_unstated_points: 15          # years not stated but the title is analyst level (every row that reaches scoring is)
+senior_penalty: 5
 
-# --- skill_overlap -----------------------------------------------------------------------------
-# Each group counts once if any term appears in the JD. Score = matched weight / total weight,
-# then lifted by skill_saturation (matching this share of the total already counts as 1.0).
-skill_saturation: 0.60
+# --- skills overlap: 3 points per group found, max `points.skills` ------------------------------------
+skill_points_each: 3
 skills:
-  - {name: forecasting,           weight: 1.0, terms: ['forecast', 'budgeting', 'long[- ]range plan', 'lrp', 'annual operating plan']}
-  - {name: pricing,               weight: 1.0, terms: ['pricing', 'deal desk', 'cost estimat', 'cost proposal', 'rate model', 'unit economics']}
-  - {name: variance_scenario,     weight: 1.0, terms: ['variance', 'scenario', 'sensitivity', 'bridge analysis', 'flux']}
-  - {name: excel_vba,             weight: 1.0, terms: ['excel', 'vba', 'power query', 'pivot', 'xlookup', 'macros']}
-  - {name: sql,                   weight: 0.8, terms: ['\bsql\b']}
-  - {name: python,                weight: 0.6, terms: ['\bpython\b']}
-  - {name: dcf_valuation,         weight: 0.8, terms: ['\bdcf\b', 'discounted cash flow', 'valuation', 'comps\b', 'comparable compan']}
-  - {name: pnl,                   weight: 1.0, terms: ['p&l', 'p & l', 'profit and loss', 'income statement', 'margin analysis', 'financial statements']}
-  - {name: modeling,              weight: 0.8, terms: ['financial model', 'driver[- ]based', 'three[- ]statement', '3[- ]statement']}
-  - {name: bi_tools,              weight: 0.4, terms: ['power bi', 'tableau', 'looker']}
-  - {name: stakeholder_partnering, weight: 0.4, terms: ['business partner', 'cross[- ]functional', 'stakeholder']}
+  - {name: forecasting,         terms: ['forecast', 'budgeting', 'long[- ]range plan', 'annual operating plan']}
+  - {name: variance_scenario,   terms: ['variance', 'scenario', 'sensitivity', 'flux analysis', 'bridge analysis']}
+  - {name: modeling,            terms: ['financial model', 'driver[- ]based', 'three[- ]statement', '3[- ]statement', 'valuation model', '\bdcf\b']}
+  - {name: cross_functional,    terms: ['cross[- ]functional', 'business partner', 'stakeholder', 'partner with']}
+  - {name: sql_python,          terms: ['\bsql\b', '\bpython\b', '\bvba\b', 'power query']}
+  - {name: automation_ai,       terms: ['automat', '\bAI\b', 'machine learning', 'streamlin']}
 
-# --- metro -------------------------------------------------------------------------------------
-metro_scores:
-  bay_area: 1.00
-  seattle: 0.85
-  new_york: 0.80
-  austin: 0.75
-  chicago: 0.75
-  boston: 0.70
-  miami: 0.55
-  hawaii: 0.55
-  dallas: 0.60
-  denver: 0.60
-  atlanta: 0.60
-  dc_baltimore: 0.60
-  los_angeles: 0.65
-  san_diego: 0.65
-metro_unknown: 0.40
+# --- training signal: patterns on the JD text (and title), case-insensitive regexes ------------------
+# A group scores once however many of its patterns match. Total is capped at `points.training`.
+# The first matching phrase of each group is shown on the board as "Training: <phrase>".
+training_signal:
+  - name: program
+    points: 8
+    patterns:
+      - 'rotational (?:program|programme|analyst|development)'
+      - 'rotation(?:al)? program'
+      - 'leadership (?:development )?program'
+      - 'development program'
+      - 'analyst program'
+      - '\banalyst i\b'
+      - 'new[- ]grad(?:uate)?'
+      - 'recent graduate'
+      - 'early[- ]career'
+      - 'entry[- ]level'
+      - '0\s*[-–]\s*2\s*years'
+      - 'graduate program'
+  - name: mentorship
+    points: 4
+    patterns:
+      - 'mentorship|mentoring|mentor\b'
+      - 'structured training'
+      - 'we will train|we.ll train|will be trained|training program|on[- ]the[- ]job training'
+      - 'coaching'
+      - 'career development|professional development'
+      - 'eager to learn|opportunity to learn|learn(?:ing)? (?:and|&) grow|learn from'
+  - name: ladder
+    points: 3
+    patterns:
+      - 'analyst i/ii|analyst i,? ii|analyst i or ii|analyst i and ii|analyst i-ii'
+      - 'path to senior|path to (?:a )?senior|growth path|promotion path|career (?:ladder|path|progression)'
+      - 'promot(?:e|ed|ion) to (?:senior|analyst ii)'
+future_tier_points: {future: 10, adjacent: 6, traditional: 2}
+future_tier_unknown_points: 4           # company not found in companies.yaml
 
-# --- company_priority --------------------------------------------------------------------------
-company_priority_scores: {1: 1.00, 2: 0.65, 3: 0.35}
-company_unknown: 0.50
+# --- location points by metro key (filters.yaml); unknown location gets location_unknown_points ----
+location_points:
+  bay_area: 5
+  los_angeles: 5
+  san_diego: 5
+  seattle: 4
+  new_york: 4
+default_location_points: 3
+location_unknown_points: 2
 
-# --- freshness ---------------------------------------------------------------------------------
-# days since posted -> score. Linear from 0 days (1.0) to the window edge (floor).
-freshness_floor: 0.20
-freshness_approx_multiplier: 0.90   # applied when the date is approximate (first_seen used)
+# --- keyword groups for /apply (not scored) ----------------------------------------------------------
+# /apply and GapCheck.md split the JD's skill words into ones the candidate file supports (mirror them) and ones it does not.
+keyword_groups:
+  - {name: forecasting,            terms: ['forecast', 'budgeting', 'long[- ]range plan', 'lrp', 'annual operating plan']}
+  - {name: pricing,                terms: ['pricing', 'deal desk', 'cost estimat', 'cost proposal', 'rate model', 'unit economics']}
+  - {name: variance_scenario,      terms: ['variance', 'scenario', 'sensitivity', 'bridge analysis', 'flux']}
+  - {name: excel_vba,              terms: ['excel', 'vba', 'power query', 'pivot', 'xlookup', 'macros']}
+  - {name: sql,                    terms: ['\bsql\b']}
+  - {name: python,                 terms: ['\bpython\b']}
+  - {name: dcf_valuation,          terms: ['\bdcf\b', 'discounted cash flow', 'valuation', 'comps\b', 'comparable compan']}
+  - {name: pnl,                    terms: ['p&l', 'p & l', 'profit and loss', 'income statement', 'margin analysis', 'financial statements']}
+  - {name: modeling,               terms: ['financial model', 'driver[- ]based', 'three[- ]statement', '3[- ]statement']}
+  - {name: bi_tools,               terms: ['power bi', 'tableau', 'looker']}
+  - {name: stakeholder_partnering, terms: ['business partner', 'cross[- ]functional', 'stakeholder']}
 
-# --- flat point adjustments (after weighting) --------------------------------------------------
-adjustments:
-  jd_not_fetched: -5
-  location_unknown: -3
-  degree_masters_preferred: 0
-  stretch: -6                # required years equal to the limit (2): reaching, not matching
-  years_not_stated: -2
-  cert_required: -4          # a license listed as required (CFA/CPA/Series 7/63/65/66 are hidden before this applies)
-  cert_obtainable: 0
-
-# --- company aliases ---------------------------------------------------------------------------
-# Substring (case/punctuation-insensitive) in the scan-history portal/company -> name in companies.yaml.
+# --- company aliases ---------------------------------------------------------------------------------
+# Substring (case/punctuation-insensitive) in the company name -> name in companies.yaml.
 company_aliases:
   youtube: Google
   deepmind: Google
   "amazon.com services": Amazon
   "amazon web services": Amazon
   fmr: Fidelity
-
-# --- tracks (Board "Track" column), first match wins -------------------------------------------
-tracks:
-  - {name: Equity Research,   patterns: ['equity research', 'equity analyst', 'research associate', 'investment analyst']}
-  - {name: Pricing,           patterns: ['pricing', 'deals? desk', 'revenue analyst', 'cost analyst', 'deal finance']}
-  - {name: FP&A,              patterns: ['fp&a', 'fpa\b', 'financial planning', 'strategic finance', 'business finance', 'product finance', 'corporate finance']}
-  - {name: Financial Analyst, patterns: ['financial analyst', 'finance analyst', 'finance associate', 'finance rotation', 'financial rotation']}
-track_default: Financial Analyst

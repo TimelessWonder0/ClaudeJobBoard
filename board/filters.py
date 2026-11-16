@@ -57,8 +57,55 @@ def title_is_finance_role(title: str, cfg: dict) -> bool:
     bare = re.sub(r"\b(?:senior|sr\.?|lead|principal|staff|junior|jr\.?|i{1,3}|iv)\b", "", head, flags=re.I).strip(" ,-")
     if any(re.search(p, bare, re.I) for p in cfg["generic_title_heads"]):
         rest = (title or "")[len(head):]
-        return any(rx.search(rest) for rx in allowed)       # "Analyst, FP&A": the rest names the field
-    return False
+        if any(rx.search(rest) for rx in allowed):          # "Analyst, FP&A": the rest names the field
+            return True
+    return analyst_combo(title, cfg)
+
+
+def analyst_combo(title: str, cfg: dict) -> bool:
+    """A title with analyst / associate (business analyst included) passes only when it also names a finance word
+    (analyst_combo.finance_words) and is not an off-track kind of analyst (analyst_combo.exclude)."""
+    combo = cfg.get("analyst_combo")
+    if not combo:
+        return False
+    t = title or ""
+    return bool(re.search(combo["roles"], t, re.I) and re.search(combo["finance_words"], t, re.I)
+                and not re.search(combo["exclude"], t, re.I))
+
+
+def title_blocked(title: str, cfg: dict | None = None) -> tuple[str, str] | None:
+    """Titles that are sales-like, move backward into estimating, or sit in the wrong function. Returns (rule, text)."""
+    cfg = cfg or config.filters_config()
+    for key, rule, label in (("sales_like_title_patterns", "sales_like", "Sales-like title"),
+                             ("moves_backward_title_patterns", "moves_backward", "Moves backward (estimating / proposal pricing / EVM)"),
+                             ("wrong_function_title_patterns", "wrong_function", "Wrong function (accounting, tax, audit, AP/AR, payroll, AML, insurance, credit, underwriting)")):
+        for rx in _compile(cfg.get(key, [])):
+            m = rx.search(title or "")
+            if m:
+                return rule, f"{label}: '{m.group(0).strip()}'"
+    # "client" titles (client onboarding, client service, client reporting ...) are blocked unless the title also names a finance
+    # function. "Financial Services" is an industry, not a function, so it does not count as a finance word.
+    combo = cfg.get("analyst_combo")
+    if combo and re.search(r"\bclient\b", title or "", re.I):
+        stripped = re.sub(r"financ\w*\s+services", " ", title or "", flags=re.I)
+        if not re.search(combo["finance_words"], stripped, re.I):
+            return "client_title", "Client title without a finance word: 'client'"
+    return None
+
+
+_SENIOR = re.compile(r"\b(?:senior|sr)\b\.?", re.I)
+
+
+def is_senior(title: str) -> bool:
+    return bool(_SENIOR.search(title or ""))
+
+
+def staffing_company(name: str, cfg: dict | None = None) -> str | None:
+    cfg = cfg or config.filters_config()
+    for agency in cfg.get("staffing_agencies", []):
+        if re.search(r"(?<![A-Za-z])" + re.escape(agency) + r"(?![A-Za-z])", name or "", re.I):
+            return agency
+    return None
 
 
 def grad_excludes(grad, grad_date: date, ref: date) -> str:
@@ -121,7 +168,10 @@ def apply_filters(job: Job, ext: Extraction, cfg: dict | None = None, careerops_
         m = None if skip_title else re.search(cfg["hide_title_roman_levels"], title)           # case-sensitive: III and above
         if m:
             job.reasons.append(Reason("title", f"Level {m.group(0).strip(' ,(-')} or above", title))
-    if not skip_title and not title_is_finance_role(title, cfg):
+    blocked = None if skip_title else title_blocked(title, cfg)
+    if blocked:
+        job.reasons.append(Reason(blocked[0], blocked[1], title))
+    elif not skip_title and not title_is_finance_role(title, cfg):
         job.reasons.append(Reason("title_offtrack", "Not a finance analyst, FP&A, pricing or research role",
                                   f"title: {title}"))
     for rx in _compile(cfg["flag_title_patterns"]):
@@ -165,7 +215,10 @@ def apply_filters(job: Job, ext: Extraction, cfg: dict | None = None, careerops_
 
     # 4. years of experience required
     yr = ext.years_required
-    max_years = cfg["max_required_years"]
+    senior = is_senior(title)
+    max_years = cfg["senior_max_required_years"] if senior else cfg["max_required_years"]
+    if senior:
+        job.flags.append(f"senior title (kept only with {_fmt(max_years)} or fewer years required)")
     if yr:
         eff = yr.effective_years if yr.effective_years is not None else yr.min_years
         conf = yr.confidence
@@ -213,7 +266,7 @@ def apply_filters(job: Job, ext: Extraction, cfg: dict | None = None, careerops_
     if skip_location:
         pass
     elif status == "outside":
-        job.reasons.append(Reason("metro", "Outside the 8 metros", job.location))
+        job.reasons.append(Reason("metro", "Outside the target metros", job.location))
     elif status == "unknown":
         job.flags.append("location unknown")
 
@@ -224,6 +277,27 @@ def apply_filters(job: Job, ext: Extraction, cfg: dict | None = None, careerops_
         job.reasons.append(Reason("remote", "Fully remote", mode.evidence))
     elif mode.mode == "unknown":
         job.flags.append("work mode not stated")
+
+    # 9. staffing agencies and contract postings
+    agency = staffing_company(job.company, cfg)
+    if agency:
+        job.reasons.append(Reason("staffing", f"Staffing agency ({agency})", job.company))
+    else:
+        for rx in _compile(cfg.get("staffing_jd_patterns", [])):
+            m = rx.search(jd)
+            if m:
+                job.reasons.append(Reason("staffing", "Staffing or contract posting", _around(jd, m)))
+                break
+
+    # 10. moves backward: a cost / pricing analyst whose JD is about government contracts
+    low = title.lower()
+    if any(t in low for t in cfg.get("moves_backward_cost_titles", [])):
+        for rx in _compile(cfg.get("moves_backward_jd_patterns", [])):
+            m = rx.search(jd)
+            if m:
+                job.reasons.append(Reason("moves_backward", "Cost / pricing analyst on government contracts (moves backward)",
+                                          _around(jd, m)))
+                break
 
     # 8. age (rows reaching here are already inside the window; kept for rows built by other callers)
     if job.age_days is not None and job.age_days > cfg["days"]:

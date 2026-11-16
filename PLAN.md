@@ -337,3 +337,7 @@ C:\ClaudeJobBoard\
 ## What I will do next
 
 Phase 1 setup is done. Next, on your go: Phase 0 leftovers (move PDFs to `inputs/`, `.gitignore`), then `node scan.mjs --dry-run` and a first real scan to measure how often `posted_at` is empty. The company list can wait until you send it.
+
+## TODO
+
+- Workday: discover each tenant's Job Category facet ID for Finance once, cache it in companies.yaml, query with that facet instead of 10 keywords. (Workday has no posted-date facet or working sort, so paging cannot stop at the 4-day window; a Finance category facet would cut the number of pages. Workday also rate-limits hard after several full runs in a day.)
