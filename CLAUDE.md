@@ -6,7 +6,7 @@ Personal daily job board for Shreyas Kukanur. Runs on Windows 11 (Windows PowerS
 
 Every day: find finance roles at my target companies posted in the last 4 days and within my reach, score them against my resume, and write `output\jobs_latest.md` (the file Claude reads) plus a dated Excel board I can sort and mark Applied. When I pick a role, build a tailored resume and cover letter PDF for it.
 
-**Rebuild in progress (branch `rebuild/python-pipeline`).** Python does all fetching, filtering and scoring. `jobboard` runs `python -m board run`, which fetches the ATS APIs directly, applies the rules below, scores, and writes `jobs_latest.md`, `jobs_<date>.md` and the Excel board, with **zero Claude calls** unless `--with-claude` is passed to `python -m board run` (the `jobboard` command never passes it). `/review` and `/apply` still read the xlsx and are being rewired to read `jobs_latest.md` and the role's saved JD file; where they disagree with this file, this file wins.
+**Rebuild in progress (branch `rebuild/python-pipeline`).** Python does all fetching, filtering and scoring. `jobboard` runs `python -m board run`, which fetches the ATS APIs directly, applies the rules below, scores, and writes `jobs_latest.md`, `jobs_<date>.md` and the Excel board, with **zero Claude calls** unless `--with-claude` is passed to `python -m board run` (the `jobboard` command never passes it). `/apply` reads that role's entry in `jobs_latest.md` and its saved JD file, never the xlsx; Python updates the master.
 
 ## How to run it
 
@@ -32,7 +32,6 @@ jobboard -SkipProviders   # skip the node scan.mjs step for Apple, Google and Pi
 
 - `/jobs` reads `output\jobs_latest.md` first (warns if its run date is not today; never scans), gives the top 30 Board roles and the top 10 Date unconfirmed roles (by Python score) a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap; anything past the caps goes to Passed Over as "below cap" with its Python score, and writes `output\reviews\Claude_Review_<date>.xlsx` with `board/write_review.py` (sheets Picks, Date Unconfirmed, Passed Over, Run Info; never writes to the master).
 - **Claude never runs or waits on the pipeline.** There is no `/scan` command; I run `jobboard` myself.
-- `/review` is retired and only points to `/jobs`.
 - `/apply <id>` builds the resume and cover letter PDFs into `applications\<date>_<company>_<title>\`, writes `GapCheck.md`, puts the paths in Excel, sets Status = Docs Ready.
 - `/mark <id> <status>` sets Status (and Applied Date for Applied) in the master.
 
@@ -79,9 +78,9 @@ The board does not search for finance words. It pulls **every job at every scann
    - **Data root: `C:\ClaudeJobBoard\career-ops-data`**, set by the user-level environment variable `CAREER_OPS_ROOT` (`setx`; new shells only). It holds `portals.yml`, `cv.md`, `config/profile.yml`, `modes/`, and `data/` (including `scan-history.tsv`). It is outside version control on purpose. `jobboard.ps1` and `board/` set the variable themselves when they spawn node.
    - `onboard-write.mjs` writes to the checkout by default; always pass `--target C:\ClaudeJobBoard\career-ops-data`.
 2. `board/` — Python package: `fetch/` (per-ATS fetchers, date handling, prefilter), `dates` (UTC, America/Chicago window), `jd` (job descriptions, cached in `jobs\<id>_<company>_<title>\JD.md`), `extract` (years, degree, certs, work mode with the source sentence), `filters`, `score`, `pipeline`, `markdown` (`jobs_latest.md`), `excel`, `review`, `applications`, `cli`. `ingest` reads `scan-history.tsv` for the scan.mjs providers only.
-3. `jobboard.ps1` / `jobboard.cmd` — the one-command run. `.claude/commands/` — `/jobs`, `/apply`, `/mark` (`/review` is a pointer to `/jobs`).
+3. `jobboard.ps1` / `jobboard.cmd` — the one-command run. `.claude/commands/` — `/jobs`, `/apply`, `/mark`.
 
-State: `state/` (ID ledger `ids.json`, `reviews.json`, `overrides.json`, `last_scan.json`, `last_run.json`), `output/` (workbooks), `applications/` (PDFs), `jobs/` (JDs), `logs/`. All git-ignored.
+State: `state/` (ID ledger `ids.json`, `overrides.json`, `last_scan.json`, `last_run.json`), `output/` (workbooks), `applications/` (PDFs), `jobs/` (JDs), `logs/`. All git-ignored.
 
 ## Excel
 

@@ -1,16 +1,22 @@
 ---
-description: Build a tailored one-page resume and cover letter PDF for a board role, gap-check it, update Excel
-argument-hint: "<id>   (the ID column on the Board sheet)"
-allowed-tools: Bash(python -m board apply:*), Read, Write
+description: Build a tailored one-page resume and cover letter PDF for a board role, gap-check it, update the master Excel through Python
+argument-hint: "<id>   (the [ID] in output\jobs_latest.md, same as the ID column of the master)"
+allowed-tools: Bash(python -m board apply:*), Read, Grep, Write
 ---
 
 Build application documents for Shreyas for role ID `$ARGUMENTS`. Work from `C:\ClaudeJobBoard`.
-This command never submits an application and never contacts anyone. It produces files and updates Excel.
+This command never submits an application and never contacts anyone. It produces files; Python updates the master.
+
+**What you may read:** that one role's entry in `output\jobs_latest.md` (find it with Grep for `### [<id>]` and a few lines
+after it; do not read the whole file), the role's saved JD file, and `config\candidate.yaml`, plus the `inputs\` PDFs named
+below. **Never open or read an `.xlsx` file**, and never edit one: Python writes the Resume, Cover Letter and Status cells.
 
 ## 1. Prepare
 
-Run `python -m board apply prepare <id>`. It creates `applications\<date>_<company>_<title>\` and writes
-`request.json` there. If it fails (unknown ID, no JD on file), tell the user and stop.
+Run `python -m board apply prepare <id>`. Python looks the role up in `output\jobs_latest.md` (Board or Date unconfirmed),
+creates `applications\<date>_<company>_<title>\` and writes `request.json` there. If it fails (unknown ID, a hidden
+role, no JD on file, no `jobs_latest.md`), tell the user exactly what it printed and stop. If the role is under
+Date unconfirmed, say in your report that its posting date still needs checking.
 
 Read `request.json`. It lists the source files, what the extractor found in the JD (`jd_extraction`), the limits,
 and `keywords`: `mirror` = JD words the candidate file supports, `do_not_claim` = JD words it does not.
@@ -89,7 +95,7 @@ the user a long shot; say so plainly, including a years requirement above 1.5). 
 
 ## 6. Update Excel
 
-Run `python -m board apply finish <id>`. It puts the two PDF paths in the Resume and Cover Letter cells and sets
+Run `python -m board apply finish <id>` (Python edits the master; you do not touch the workbook). It puts the two PDF paths in the Resume and Cover Letter cells and sets
 Status = Docs Ready (only if the status is New or Interested; an Applied role is left alone). If the master is open in
 Excel it saves a timestamped copy and prints a NOTE; pass that on.
 

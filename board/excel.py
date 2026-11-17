@@ -140,7 +140,7 @@ class MasterState:
     hidden_overrides: set[int] = field(default_factory=set)
     hidden_ids: set[int] = field(default_factory=set)
     hidden_rows: list[dict] = field(default_factory=list)
-    funnel_rows: list[tuple[list, bool]] = field(default_factory=list)   # (values, bold) copied through /review re-renders
+    funnel_rows: list[tuple[list, bool]] = field(default_factory=list)   # (values, bold) copied through re-renders
     run_log: list[dict] = field(default_factory=list)
     existed: bool = False
 
@@ -234,23 +234,12 @@ def _find_pdf(num: int, kind: str) -> str:
     return ""
 
 
-def _why_gaps(review: dict | None, old: str) -> str:
-    if review and (review.get("why") or review.get("gaps")):
-        parts = []
-        if review.get("why"):
-            parts.append(f"Fits: {review['why']}")
-        if review.get("gaps"):
-            parts.append(f"Gaps: {review['gaps']}")
-        return "\n".join(parts)
-    return old or ""
-
-
 def _years_cell(job: dict) -> float | None:
     y = job.get("years_required")
     return float(y) if y is not None else None
 
 
-def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict, today: date) -> tuple[list[dict], list[dict], set[int]]:
+def build_rows(result: dict, master: MasterState, ledger: Ledger, today: date) -> tuple[list[dict], list[dict], set[int]]:
     """Return (board_rows, hidden_rows, new_ids) as dicts keyed by column name."""
     for num, old in master.board.items():                 # rebuild lost ledger entries from the Key column
         ledger.adopt(str(old.get("Key") or ""), num)
@@ -271,19 +260,13 @@ def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict,
         p = job.get("posted") or ""
         return f"~{p}" if p and job.get("date_approx") else p
 
-    def review_score(num: int, job: dict):
-        r = reviews.get(str(num)) or {}
-        return r.get("score", job.get("score")), r
-
     for job in result["shown"] + result["hidden"]:
         num, found = base(job)
         seen_nums.add(num)
         is_hidden = bool(job["reasons"]) and not (num in master.hidden_overrides)
-        score, review = review_score(num, job)
+        score = job.get("score")
         old = master.board.get(num, {})
         flags = list(job["flags"])
-        if review.get("score") is not None and review.get("rule_score") is not None:
-            flags.append(f"reviewed: {_fmt_score(review['rule_score'])} -> {_fmt_score(review['score'])}")
         touched =(old.get("Status") or "New") != "New" or str(old.get("Notes") or "").strip()
         if job["reasons"] and is_hidden and touched:
             is_hidden = False                       # you already worked this row; a filter change must not bury it
@@ -314,7 +297,7 @@ def build_rows(result: dict, master: MasterState, ledger: Ledger, reviews: dict,
             "Fit Score (0-100)": score, "Career-ops score": job.get("careerops_score"),
             "Report": "Report" if job.get("careerops_report") else "", "Report__link": job.get("careerops_report") or None,
             "Years Req": _years_cell(job), "Flags": "; ".join(flags),
-            "Why it fits / Gaps": _why_gaps(review, old.get("Why it fits / Gaps") or ""),
+            "Why it fits / Gaps": old.get("Why it fits / Gaps") or "",
             "Status": old.get("Status") or "New",
             "Applied Date": _to_date(old.get("Applied Date")),
             "Resume": old.get("Resume") or "", "Resume__link": old.get("Resume__link") or _find_pdf(num, "resume"),
@@ -582,11 +565,10 @@ def write_outputs(result: dict, now: datetime | None = None, out_dir: Path | Non
     except MasterUnreadable as exc:              # never overwrite a master whose statuses we cannot see
         master, unreadable = MasterState(), str(exc)
     ledger = Ledger(sdir / "ids.json")
-    reviews = _read_json(sdir / "reviews.json", {})
     overrides = set(_read_json(sdir / "overrides.json", []))
     master.hidden_overrides |= overrides
 
-    board_rows, hidden_rows, new_ids = build_rows(result, master, ledger, reviews, today)
+    board_rows, hidden_rows, new_ids = build_rows(result, master, ledger, today)
     _write_json(sdir / "overrides.json", sorted(master.hidden_overrides))
     ledger.save()
 
@@ -617,68 +599,6 @@ def write_outputs(result: dict, now: datetime | None = None, out_dir: Path | Non
     return {"snapshot": str(snap), "master": str(master_written), "locked": snap_locked or master_locked,
             "notes": notes, "board": len(board_rows), "hidden": len(hidden_rows), "new": len(new_ids),
             "ids": ids, "board_nums": [r["ID"] for r in sorted(board_rows, key=rank_key)]}
-
-
-# ----------------------------------------------------------------------------------------------
-# /review: write Fit Score adjustments and Why/Gaps into the existing workbook
-# ----------------------------------------------------------------------------------------------
-
-def apply_reviews(updates: dict[int, dict], now: datetime | None = None, out_dir: Path | None = None,
-                  state_dir: Path | None = None) -> dict:
-    """Patch reviewed rows in the master, re-sort by Fit Score, and save master + today's snapshot.
-
-    updates: {ID: {"final": number, "rule": number, "why": str, "gaps": str, "reason": str}}.
-    Everything else in the master (Status, Notes, links, Hidden, Run Log) is carried over unchanged.
-    """
-    now = now or datetime.now()
-    today = now.date()
-    out_dir = out_dir or config.output_dir()
-    sdir = state_dir or config.state_dir()
-    master_path = out_dir / "JobBoard_Master.xlsx"
-    snap_path = out_dir / f"JobBoard_{today.isoformat()}.xlsx"
-    master = read_master(master_path)            # raises MasterUnreadable if it cannot be read
-    if not master.existed:
-        raise MasterUnreadable(f"{master_path} does not exist; run python -m board run first")
-
-    reviews = _read_json(sdir / "reviews.json", {})
-    rows = []
-    for num, old in master.board.items():
-        row = dict(old)
-        u = updates.get(num)
-        if u:
-            row["Fit Score (0-100)"] = u["final"]
-            row["Why it fits / Gaps"] = _why_gaps({"why": u["why"], "gaps": u["gaps"]}, "")
-            flags = [f for f in str(row.get("Flags") or "").split("; ") if f and not f.startswith("reviewed: ")]
-            if u["final"] != u["rule"]:
-                flags.append(f"reviewed: {_fmt_score(u['rule'])} -> {_fmt_score(u['final'])}")
-            row["Flags"] = "; ".join(flags)
-            reviews[str(num)] = {k: v for k, v in {
-                "score": u["final"] if u["final"] != u["rule"] else None, "rule_score": u["rule"], "why": u["why"],
-                "gaps": u["gaps"], "reason": u.get("reason", ""), "evidence": u.get("evidence", ""),
-                "reviewed_on": today.isoformat()}.items() if v is not None}
-        row["Applied Date"] = _to_date(row.get("Applied Date"))
-        rows.append(row)
-    rows.sort(key=rank_key)
-    new_ids = {int(r["ID"]) for r in rows + master.hidden_rows if r.get("__bold") and _num(r.get("ID")) is not None}
-    log_rows = [{c: r.get(c) for c in LOG_COLS} for r in master.run_log]
-
-    wb = build_workbook(rows, master.hidden_rows, manual_rows(), log_rows, new_ids, funnel_rows=master.funnel_rows)
-    _write_json(sdir / "reviews.json", reviews)
-    snap, snap_locked = save_safely(wb, snap_path, now)
-    master_written, master_locked = save_safely(wb, master_path, now)
-    notes = []
-    for label, path, locked in (("snapshot", snap, snap_locked), ("master", master_written, master_locked)):
-        if locked:
-            notes.append(f"{label} is open in Excel; saved a timestamped copy instead: {path}")
-    if master_locked:
-        notes.append("Close JobBoard_Master.xlsx and run /review again to update it. Review results are saved in state/reviews.json.")
-    return {"snapshot": str(snap), "master": str(master_written), "locked": snap_locked or master_locked,
-            "notes": notes, "reviewed": len(updates)}
-
-
-def _fmt_score(x) -> str:
-    f = float(x)
-    return str(int(f)) if f.is_integer() else f"{f:.1f}"
 
 
 # ----------------------------------------------------------------------------------------------

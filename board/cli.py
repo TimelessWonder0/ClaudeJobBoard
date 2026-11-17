@@ -6,7 +6,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from . import applications, excel, pipeline, review
+from . import applications, config, excel, pipeline
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,17 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     tb.add_argument("--date", help="run date (YYYY-MM-DD), default latest")
     tb.add_argument("--out", type=Path)
     tb.add_argument("--state", type=Path)
-    rev = sub.add_parser("review", help="support for the /review command")
-    rsub = rev.add_subparsers(dest="rcmd", required=True)
-    prep = rsub.add_parser("prepare", help="pick the top rows of today's board and write state/review_packet.json")
-    prep.add_argument("--top", type=int, default=25)
-    prep.add_argument("--all", action="store_true", help="include rows that already have a review")
-    prep.add_argument("--date", help="board date (YYYY-MM-DD), default today")
-    app = rsub.add_parser("apply", help="write reviews into the Excel files")
-    app.add_argument("input", type=Path, help="JSON written by /review (state/review_input.json)")
-    for sp in (prep, app):
-        sp.add_argument("--out", type=Path, help="output directory (default: output)")
-        sp.add_argument("--state", type=Path, help="state directory (default: state)")
     mk = sub.add_parser("mark", help="set a role's Status in the master Excel (Applied also sets Applied Date)")
     mk.add_argument("id", type=int)
     mk.add_argument("status", help="one of: " + ", ".join(excel.STATUSES))
@@ -69,8 +58,6 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "fetch":
         return _fetch(args)
-    if args.cmd == "review":
-        return _review(args)
     if args.cmd == "table":
         return _table(args)
     if args.cmd == "mark":
@@ -116,7 +103,7 @@ def _run(args) -> int:
 
 def _write_last_run(result: dict, out: dict, state_dir: Path | None) -> None:
     """state/last_run.json: what jobboard.ps1 prints in its summary."""
-    sdir = state_dir or review.config.state_dir()
+    sdir = state_dir or config.state_dir()
     sdir.mkdir(parents=True, exist_ok=True)
     summary = {
         "run_date": result["run_date"], "history_rows": result["history_rows"], "gate": result.get("gate", {}),
@@ -126,36 +113,6 @@ def _write_last_run(result: dict, out: dict, state_dir: Path | None) -> None:
         "master": out["master"], "locked": out["locked"], "notes": out["notes"],
     }
     (sdir / "last_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
-
-def _review(args) -> int:
-    try:
-        if args.rcmd == "prepare":
-            packet = review.prepare(top=args.top, day=date.fromisoformat(args.date) if args.date else None,
-                                    include_reviewed=args.all, out_dir=args.out, state_dir=args.state)
-            print(f"Review packet: {len(packet['rows'])} rows from {packet['source']}")
-            print(f"Skipped: {packet['skipped']}   Resume: {packet['resume_path']}")
-            print(f"Packet file: {(args.state or review.config.state_dir()) / 'review_packet.json'}")
-            print(f"{'id':>4} {'rule':>5}  {'company':<20} {'title':<50} JD")
-            for r in packet["rows"]:
-                print(f"{r['id']:>4} {r['rule_score']!s:>5}  {str(r['company'])[:20]:<20} {str(r['title'])[:50]:<50} {r['jd_path'] or 'NO JD'}")
-            return 0
-        res = review.apply(args.input, out_dir=args.out, state_dir=args.state)
-    except (FileNotFoundError, excel.MasterUnreadable, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    print(f"Wrote {res['written']} reviews.")
-    for c in res["changes"]:
-        print(f"  RE-RANKED id {c['id']} {c['company']} | {c['title']}: {c['from']:g} -> {c['to']:g}")
-        print(f"     why: {c['reason']}")
-        print(f"     JD quote: \"{c['evidence']}\"")
-    for w in res["warnings"]:
-        print(f"  WARNING: {w}")
-    if res["missing"]:
-        print(f"  Not reviewed (no entry): ids {res['missing']}")
-    for n in res["notes"]:
-        print(f"  NOTE: {n}")
-    return 0
 
 
 def _mark(args) -> int:
@@ -177,7 +134,7 @@ def _apply(args) -> int:
     try:
         if args.acmd == "prepare":
             req = applications.prepare(args.id, out_dir=args.out)
-            print(f"ID {args.id}  {req['job']['company']} | {req['job']['title']}  (status {req['job']['status']})")
+            print(f"ID {args.id}  {req['job']['company']} | {req['job']['title']}  (from {req['job']['source']})")
             print(f"  folder:   {req['folder']}")
             print(f"  request:  {Path(req['folder']) / 'request.json'}")
             print(f"  write:    {req['content_file']}")

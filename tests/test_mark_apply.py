@@ -6,7 +6,7 @@ from datetime import date, datetime
 import pytest
 from openpyxl import load_workbook
 
-from board import applications, config, excel
+from board import applications, config, excel, markdown
 
 NOW = datetime(2026, 10, 29, 9, 30)
 DAY = date(2026, 10, 29)
@@ -23,7 +23,8 @@ def job(hid, title="Financial Analyst II", score=80.0):
             "title": title, "location": "San Jose, CA", "url": f"https://jobs.example/{hid}", "posted": "2026-10-28",
             "age_days": 1, "date_approx": False, "metro": "bay_area", "work_mode": "onsite", "company_priority": 1,
             "jd_source": "fetch-jd", "jd_dir": "", "flags": [], "reasons": [], "years_required": 2.0, "years_evidence": "",
-            "degree_required": None, "degree_evidence": "", "certs": [], "score_parts": {}}
+            "degree_required": None, "degree_evidence": "", "certs": [], "score_parts": {}, "date_flag": "", "pay": "", "workplace": "",
+            "track": "Financial Analyst", "training": [], "requirements": ["2 years of experience in FP&A or pricing."], "jd_path": ""}
 
 
 @pytest.fixture
@@ -36,10 +37,13 @@ def env(tmp_path, monkeypatch):
     (folder / "JD.md").write_text(JD, encoding="utf-8")
     hidden = job("k0000009", score=40)
     hidden["reasons"] = [{"rule": "years_required", "text": "5+ years required (limit 3)", "evidence": "5 years"}]
-    res = {"run_date": "2026-10-29", "window_days": 4, "history_rows": 2, "selection": {}, "jd_fetch": {}, "hidden_by_rule": {},
-           "shown": [job("k0000001")], "hidden": [hidden]}
+    shown = job("k0000001")
+    shown["jd_path"] = str(folder / "JD.md")
+    res = {"run_date": "2026-10-29", "run_start": "2026-10-29T15:00:00+00:00", "window_days": 4, "history_rows": 2, "selection": {},
+           "jd_fetch": {}, "hidden_by_rule": {}, "fetch": {}, "dropped": [], "shown": [shown], "hidden": [hidden]}
     out, state = tmp_path / "output", tmp_path / "state"
-    excel.write_outputs(res, now=NOW, out_dir=out, state_dir=state)
+    written = excel.write_outputs(res, now=NOW, out_dir=out, state_dir=state)
+    markdown.write(res, written["ids"], written["board_nums"], out_dir=out)         # /apply reads this file, not the xlsx
     return tmp_path, out
 
 
@@ -277,3 +281,57 @@ def test_overlong_resume_is_refused(env, monkeypatch):
     monkeypatch.setattr(applications, "_page_count", lambda p: 2)
     with pytest.raises(applications.ApplyError, match="one page"):
         applications.render_one_page(lambda fs: "<html></html>", applications.FONT_SIZES_RESUME, out / "x.pdf")
+
+
+# ---- /apply reads jobs_latest.md, never the xlsx ------------------------------------------------------------------------
+
+def test_prepare_works_from_jobs_latest_md_without_reading_any_xlsx(env, monkeypatch):
+    _, out = env
+    import openpyxl
+
+    def boom(*a, **k):
+        raise AssertionError("/apply prepare read an .xlsx")
+
+    monkeypatch.setattr(openpyxl, "load_workbook", boom)
+    monkeypatch.setattr(excel, "load_workbook", boom, raising=False)
+    monkeypatch.setattr(excel, "read_master", boom)
+    for p in out.glob("*.xlsx"):
+        p.unlink()                                                      # no workbook on disk at all
+    req = applications.prepare(1, day=DAY, out_dir=out)
+    assert req["job"]["company"] == "Acme Robotics" and req["job"]["title"] == "Financial Analyst II"
+    assert req["job"]["source"].endswith("jobs_latest.md") and req["job"]["jd_path"].endswith("JD.md")
+    assert req["job"]["url"] == "https://jobs.example/k0000001"
+    assert "excel_vba" in [k["group"] for k in req["keywords"]["mirror"]]          # the JD text came from the saved JD file
+
+
+def test_unknown_id_is_rejected(env):
+    _, out = env
+    with pytest.raises(applications.ApplyError, match="ID 99 is not on the Board or in Date unconfirmed"):
+        applications.prepare(99, day=DAY, out_dir=out)
+
+
+def test_hidden_id_is_rejected_with_its_reason(env):
+    _, out = env
+    with pytest.raises(applications.ApplyError, match=r"ID 2 is hidden .*5\+ years required"):
+        applications.prepare(2, day=DAY, out_dir=out)
+
+
+def test_missing_jobs_latest_md_is_a_clear_error(env):
+    _, out = env
+    (out / "jobs_latest.md").unlink()
+    with pytest.raises(applications.ApplyError, match="jobs_latest.md not found; run jobboard first"):
+        applications.prepare(1, day=DAY, out_dir=out)
+
+
+def test_a_date_unconfirmed_role_can_be_applied_to(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "applications_dir", lambda: tmp_path / "applications")
+    folder = tmp_path / "jobs" / "k0000002_Acme_Role"
+    folder.mkdir(parents=True)
+    (folder / "JD.md").write_text(JD, encoding="utf-8")
+    j = job("k0000002")
+    j["jd_path"], j["date_flag"] = str(folder / "JD.md"), "updated_at only"
+    res = {"run_date": "2026-10-29", "run_start": "2026-10-29T15:00:00+00:00", "window_days": 4, "fetch": {}, "dropped": [], "shown": [j], "hidden": []}
+    out = tmp_path / "output"
+    written = excel.write_outputs(res, now=NOW, out_dir=out, state_dir=tmp_path / "state")
+    markdown.write(res, written["ids"], written["board_nums"], out_dir=out)
+    assert applications.find_job(1, out)["date_flag"] == "updated_at only"

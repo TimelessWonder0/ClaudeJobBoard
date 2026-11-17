@@ -198,6 +198,21 @@ def _header(job: Job, source: str) -> str:
     )
 
 
+def body(path: Path) -> str:
+    """The JD text of a saved JD.md, without its header."""
+    raw = path.read_text(encoding="utf-8")
+    return raw.split(_SEP, 1)[1] if _SEP in raw else raw
+
+
+def find(key: str) -> Path | None:
+    """jobs/<key>_*/JD.md for a job id, or None."""
+    base = config.jobs_dir()
+    for folder in sorted(base.glob(f"{key}_*")) if base.exists() else []:
+        if (folder / "JD.md").exists():
+            return folder / "JD.md"
+    return None
+
+
 def read_cached(folder: Path) -> tuple[str, str] | None:
     path = folder / "JD.md"
     if not path.exists():

@@ -37,8 +37,7 @@ Or double-click `jobboard.cmd`. In Claude Code, open the board with `/jobs`. Cla
 
 | Command | What it does |
 |---|---|
-| `/jobs` | Reads `output\jobs_latest.md` (warns if it is not from today, never scans), gives every role a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap, and writes `output\reviews\Claude_Review_<date>.xlsx` through `board/write_review.py`. |
-| `/review` | Retired. Use `/jobs`. |
+| `/jobs` | Reads `output\jobs_latest.md` (warns if it is not from today, never scans), gives the top 30 Board and top 10 Date unconfirmed roles a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap, and writes `output\reviews\Claude_Review_<date>.xlsx` through `board/write_review.py`. |
 | `/apply <id>` | Builds the resume and cover letter PDFs for that role, writes `GapCheck.md`, puts the paths in Excel, sets Status = Docs Ready. |
 | `/mark <id> <status>` | Sets Status (New, Interested, Docs Ready, Applied, Interviewing, Rejected, Offer, Skip); Applied also sets Applied Date. |
 
@@ -63,7 +62,7 @@ The board does not search for finance words. It pulls every job at every company
 
 ## Setup (once)
 
-Requirements: Windows 10/11, Windows PowerShell 5.1, Node 22+, Python 3.12+, Excel, and optionally Claude Code for `/review`, `/apply`, `/mark`.
+Requirements: Windows 10/11, Windows PowerShell 5.1, Node 22+, Python 3.12+, Excel, and optionally Claude Code for `/jobs`, `/apply`, `/mark`.
 
 1. Clone this repo to `C:\ClaudeJobBoard`.
 2. `pip install -r requirements-dev.txt`
@@ -77,9 +76,9 @@ Requirements: Windows 10/11, Windows PowerShell 5.1, Node 22+, Python 3.12+, Exc
 
 ```
 jobboard.ps1 / jobboard.cmd   the one-command run
-board/                        Python package (ingest, jd, extract, filters, score, excel, review, applications)
+board/                        Python package (fetch, dates, jd, extract, filters, score, pipeline, markdown, excel, write_review, applications)
 config/                       companies.yaml, filters.yaml, scoring.yaml, candidate.yaml
-.claude/commands/             /jobs /apply /mark (/review is a pointer to /jobs)
+.claude/commands/             /jobs /apply /mark
 inputs/                       resume, LinkedIn profile, Harvard CV guide (personal; repo is private)
 tests/                        pytest suite and PowerShell helper tests
 career-ops/                   scanner clone (git-ignored)

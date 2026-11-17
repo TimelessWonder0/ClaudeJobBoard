@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, excel, review
+from . import config, excel, jd as jd_store, markdown
 from .jd import slug
 
 FONT_SIZES_RESUME = [10.5, 10.0, 9.5, 9.0]
@@ -271,17 +271,30 @@ def render_one_page(build, sizes: list[float], out_pdf: Path) -> float:
 # job lookup, keywords
 # ---------------------------------------------------------------------------------------------
 
+def _read_json(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
 def find_job(num: int, out_dir: Path | None = None) -> dict:
+    """The role's entry in output\\jobs_latest.md (Board or Date unconfirmed). Reads that one file; never an .xlsx."""
     out_dir = out_dir or config.output_dir()
-    master = excel.read_master(out_dir / "JobBoard_Master.xlsx")
-    row = master.board.get(num)
-    if row is None:
-        raise ApplyError(f"ID {num} is not on the Board in {out_dir / 'JobBoard_Master.xlsx'}")
-    key = str(row.get("Key") or "")
-    jd = review._jd_for(key)
-    return {"id": num, "key": key, "company": row.get("Company"), "title": row.get("Title"),
-            "url": row.get("Title__link"), "location": row.get("Location / Metro"), "status": row.get("Status") or "New",
-            "jd_path": str(jd) if jd else "", "flags": row.get("Flags") or ""}
+    md_path = out_dir / "jobs_latest.md"
+    if not md_path.exists():
+        raise ApplyError(f"{md_path} not found; run jobboard first")
+    board = markdown.parse(md_path.read_text(encoding="utf-8"))
+    role = next((r for r in board["board"] + board["unconfirmed"] if r["id"] == num), None)
+    if role is None:
+        hidden = next((h for h in board["hidden"] if h["id"] == num), None)
+        if hidden:
+            raise ApplyError(f"ID {num} is hidden ({hidden['line']}); override it in the Hidden sheet of the master, run jobboard again, then retry")
+        raise ApplyError(f"ID {num} is not on the Board or in Date unconfirmed in {md_path}")
+    jd = role["jd_path"] if role["jd_path"] and role["jd_path"] != "not saved" and Path(role["jd_path"]).exists() else ""
+    return {"id": num, "key": Path(jd).parent.name.split("_")[0] if jd else "", "company": role["company"], "title": role["title"],
+            "url": role["link"], "location": role["city"], "jd_path": jd, "flags": role["flags"], "score": role["score"],
+            "date_flag": role["date_flag"], "source": str(md_path)}
 
 
 def keyword_guidance(jd_text: str, cand: dict) -> dict:
@@ -321,10 +334,10 @@ def prepare(num: int, day: date | None = None, out_dir: Path | None = None) -> d
     folder = _folder_for(job, day)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "job.json").write_text(json.dumps({"id": num, "key": job["key"], "company": job["company"],
-                                                 "title": job["title"], "url": job["url"], "created": day.isoformat()},
+                                                 "title": job["title"], "url": job["url"], "jd_path": job["jd_path"], "created": day.isoformat()},
                                                 indent=2), encoding="utf-8")
-    jd_text = review._jd_body(Path(job["jd_path"]))
-    facts = review._read_json(Path(job["jd_path"]).parent / "facts.json", {})
+    jd_text = jd_store.body(Path(job["jd_path"]))
+    facts = _read_json(Path(job["jd_path"]).parent / "facts.json", {})
     inputs = config.ROOT / "inputs"
     request = {
         "job": job, "folder": str(folder), "content_file": str(folder / "content.json"),
@@ -383,7 +396,7 @@ def render(num: int, day: date | None = None) -> dict:
         "name_and_location_present": cand["contact"]["name"].upper() in text and cand["contact"]["location"] in text,
         "garbled_text": "(cid:" in text,
     }
-    jd_text = review._jd_body(Path(review._jd_for(job["key"]) or ""))
+    jd_text = jd_store.body(Path(job.get("jd_path") or jd_store.find(job["key"]) or ""))
     resume_text = text + "\n" + pdf_text(letter_pdf)
     covered, missing = [], []
     for group in config.scoring_config()["keyword_groups"]:
