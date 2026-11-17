@@ -1,36 +1,45 @@
 <#
 .SYNOPSIS
-  One-command job board run: scan, build the Excel board, optionally review, summarize, open Excel.
+  One-command job board run: Python fetches, filters and scores; you read output\jobs_latest.md or the Excel board.
 
 .DESCRIPTION
-  1. career-ops scan:   node scan.mjs --since <Days> --json   -> logs\<date>_scan.json
-  2. board build:       python -m board run                   -> output\JobBoard_<date>.xlsx + JobBoard_Master.xlsx
-  3. review (-Review):  claude -p "/review"                   -> "Why it fits" / "Gaps" for the top 25
-  4. summary:           companies scanned, errored boards, roles found / kept / hidden, new since last run
-  5. open:              output\JobBoard_Master.xlsx in Excel (skip with -NoOpen)
+  Runs `node scan.mjs --company <name>` for each provider the Python fetchers do not cover (Apple, Google, Pinpoint; skip
+  with -SkipProviders), then `python -m board run`. Zero Claude calls, zero tokens.
 
-  Everything is logged to logs\<date>.log. No scheduled task is created; you run it when you want.
+    output\jobs_latest.md          the plain-text board Claude reads (and a dated copy, jobs_<date>.md)
+    output\JobBoard_Master.xlsx    the board you edit; Status, Applied Date, Resume, Cover Letter and Notes survive by ID
+    output\JobBoard_<date>.xlsx    this run's snapshot
+    logs\<date>.log                everything the run printed
+    logs\board_<date>.log          the full detail of the board run (boards, funnel, 25 sample drops)
 
-.PARAMETER Review
-  Run claude -p "/review" after the board is built.
-.PARAMETER NoOpen
-  Do not open Excel at the end.
-.PARAMETER Days
-  Posting window for the scan in days (default 4, same as days in config\filters.yaml).
-.PARAMETER SkipScan
-  Reuse state\last_scan.json instead of scanning (for re-running the board build only).
+  The console shows the summary the board prints (20 lines at most). Excel opens only with -Open.
+  No scheduled task is created; you run it when you want.
+
+.PARAMETER Open
+  Open JobBoard_Master.xlsx in Excel when the run finishes.
+.PARAMETER Only
+  Fetch only these companies or ATS names (for testing), e.g. -Only Stripe,greenhouse
+.PARAMETER Full
+  Pull every posting from Workday, SmartRecruiters, Amazon, Eightfold and Oracle (no keyword queries). Slow; for testing.
+.PARAMETER BoardTimeout
+  Per-board time limit in seconds (default: fetch.board_time_limit_seconds in config\filters.yaml).
+.PARAMETER SkipProviders
+  Skip the node scan.mjs step that refreshes Apple, Google and Pinpoint (the providers the Python fetchers do not cover).
+  That step runs by default and is slow; with this switch those three only show what the last scan already saw.
 .PARAMETER LockWaitSeconds
   How long to wait for you to close JobBoard_Master.xlsx if it is open in Excel (default 300).
 
 .NOTES
-  Exit codes: 0 ok | 1 a step failed | 2 every board failed (check your internet) | 3 prerequisite missing
+  Exit codes: 0 ok | 1 the run failed | 2 every board failed (check your internet) | 3 prerequisite missing
+  Keep this file plain ASCII: Windows PowerShell 5.1 reads BOM-less scripts as ANSI.
 #>
 [CmdletBinding()]
 param(
-    [switch]$Review,
-    [switch]$NoOpen,
-    [int]$Days = 4,
-    [switch]$SkipScan,
+    [switch]$Open,
+    [string[]]$Only,
+    [switch]$Full,
+    [double]$BoardTimeout = 0,
+    [switch]$SkipProviders,
     [int]$LockWaitSeconds = 300
 )
 
@@ -38,17 +47,16 @@ $ErrorActionPreference = 'Stop'
 $script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Today = Get-Date -Format 'yyyy-MM-dd'
 $script:LogDir = Join-Path $script:Root 'logs'
-$script:StateDir = Join-Path $script:Root 'state'
 $script:OutDir = Join-Path $script:Root 'output'
 $script:LogFile = Join-Path $script:LogDir ($script:Today + '.log')
 $script:Master = Join-Path $script:OutDir 'JobBoard_Master.xlsx'
-$script:Failures = New-Object System.Collections.ArrayList
 
 # ------------------------------------------------------------------------------------------------
-# logging
+# logging (helpers are also used by tests\jobboard.tests.ps1, which dot-sources this file)
 # ------------------------------------------------------------------------------------------------
 
 function Write-Log {
+    # Level LOG goes to the log file only; the console stays quiet so the board's own summary is all you see.
     param([string]$Message, [string]$Level = 'INFO')
     $stamp = Get-Date -Format 'HH:mm:ss'
     if (-not (Test-Path $script:LogDir)) { New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null }
@@ -56,8 +64,8 @@ function Write-Log {
     switch ($Level) {
         'ERROR' { Write-Host $Message -ForegroundColor Red }
         'WARN'  { Write-Host $Message -ForegroundColor Yellow }
-        'STEP'  { Write-Host $Message -ForegroundColor Cyan }
         'OK'    { Write-Host $Message -ForegroundColor Green }
+        'LOG'   { }
         default { Write-Host $Message }
     }
 }
@@ -76,13 +84,10 @@ function New-StepFailure {
     return $ex
 }
 
-# ------------------------------------------------------------------------------------------------
-# helpers (also used by tests\jobboard.tests.ps1, which dot-sources this file)
-# ------------------------------------------------------------------------------------------------
-
 function Invoke-Logged {
-    # Run a native command, stream its output to the console and the log, return its exit code and lines.
-    param([string]$Exe, [string[]]$Arguments, [string]$WorkDir)
+    # Run a native command, write its output to the log, return its exit code and lines. With -Echo the lines also go to the
+    # console exactly as printed (no indent), which is how the board's summary reaches you.
+    param([string]$Exe, [string[]]$Arguments, [string]$WorkDir, [switch]$Echo)
     $lines = New-Object System.Collections.ArrayList
     Push-Location $WorkDir
     $prev = $ErrorActionPreference
@@ -91,7 +96,7 @@ function Invoke-Logged {
         & $Exe @Arguments 2>&1 | ForEach-Object {
             $s = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
             [void]$lines.Add($s)
-            Write-Host ("    " + $s)
+            if ($Echo) { Write-Host $s }
             Add-LogRaw ("    " + $s)
         }
         $code = $LASTEXITCODE
@@ -137,68 +142,46 @@ function Wait-MasterUnlocked {
     return $false
 }
 
-function Read-Receipt {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { return $null }
-    try {
-        $raw = Get-Content -Path $Path -Raw -Encoding UTF8
-        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-        $obj = $raw | ConvertFrom-Json
-        if ($null -eq $obj.version) { return $null }
-        return $obj
-    } catch {
-        return $null
+# ------------------------------------------------------------------------------------------------
+# pure helpers (tested)
+# ------------------------------------------------------------------------------------------------
+
+function Get-BoardArguments {
+    # The arguments for `python`. Only the switches you passed are added; nothing here can start a Claude call.
+    param([string[]]$Only, [switch]$Full, [double]$BoardTimeout = 0)
+    $result = @('-m', 'board', 'run')
+    if ($Only -and $Only.Count -gt 0) { $result += '--only'; $result += @($Only | ForEach-Object { "$_" }) }
+    if ($Full) { $result += '--full' }
+    if ($BoardTimeout -gt 0) { $result += '--board-timeout'; $result += ([string]$BoardTimeout) }
+    return $result
+}
+
+function Get-BoardExitCode {
+    # python -m board run: 0 ok, 2 every board failed, 3 could not write the workbook. Anything else is a failed run.
+    param([int]$PythonExit)
+    switch ($PythonExit) {
+        0 { return 0 }
+        2 { return 2 }
+        3 { return 3 }
+        default { return 1 }
     }
 }
 
-function Test-AllBoardsFailed {
-    # scan.mjs --json exits 2 when ANY board failed, so exit 2 alone does not mean "everything failed".
-    param([int]$ExitCode, $Receipt)
-    if ($ExitCode -ne 2) { return $false }
-    if ($null -eq $Receipt) { return $true }
-    $scanned = [int]$Receipt.scanned
-    $errors = @($Receipt.errors | Where-Object { $null -ne $_ })
-    if ($scanned -le 0) { return $true }
-    # A board that answered with zero jobs and no successful request (unverified_zero) also counts as failed.
-    $failed = @($errors | ForEach-Object { $_.company }) + @($Receipt.unverified_zero | Where-Object { $null -ne $_ })
-    $failedCount = @($failed | Select-Object -Unique).Count
-    if ($failedCount -ge $scanned) { return $true }
-    return (([int]$Receipt.found -eq 0) -and ($errors.Count -gt 0))      # nothing was read at all
-}
-
-function Get-ErroredBoards {
-    param($Receipt)
-    if ($null -eq $Receipt) { return @() }
-    $out = @()
-    foreach ($e in @($Receipt.errors)) {
-        if ($null -ne $e) { $out += ("{0} ({1})" -f $e.company, $e.error) }
+function Get-ExcelPathFromOutput {
+    # The board prints "Excel: <path>" (the master, or a timestamped copy when the master was open).
+    param([string[]]$Lines, [string]$Default)
+    foreach ($l in $Lines) {
+        if ($l -match '^Excel:\s+(.+?)\s*$') { return $Matches[1] }
     }
-    return $out
+    return $Default
 }
 
-function Get-PartialBoardWarnings {
-    param([string]$ErrFile)
-    if (-not (Test-Path $ErrFile)) { return @() }
-    $hits = Select-String -Path $ErrFile -Pattern 'offset-clamped|truncated at|hit the .*-page cap|still incomplete' -ErrorAction SilentlyContinue
-    return @($hits | ForEach-Object { $_.Line.Trim() })
-}
-
-function Show-ScanProgress {
-    # Print the newest "scan: N/M sources done" line from the scan's stderr file while it runs.
-    param([string]$ErrFile, [ref]$Last)
-    try {
-        $fs = [System.IO.File]::Open($ErrFile, 'Open', 'Read', 'ReadWrite')
-        $sr = New-Object System.IO.StreamReader($fs)
-        $text = $sr.ReadToEnd()
-        $sr.Close()
-    } catch { return }
-    $m = [regex]::Matches($text, 'scan: (\d+/\d+) sources done')
-    if ($m.Count -gt 0) {
-        $now = $m[$m.Count - 1].Groups[1].Value
-        if ($now -ne $Last.Value) {
-            $Last.Value = $now
-            Write-Host ("    scanned {0} sources" -f $now)
-        }
+function Get-FailureHint {
+    param([int]$Code)
+    switch ($Code) {
+        2 { return 'Every board failed. Check your internet connection (and any VPN or proxy), then run jobboard again.' }
+        3 { return 'The board could not write its workbook. Close JobBoard_Master.xlsx and run jobboard again.' }
+        default { return 'The board run failed. The lines above and logs\board_<date>.log say why.' }
     }
 }
 
@@ -206,157 +189,58 @@ function Show-ScanProgress {
 # steps
 # ------------------------------------------------------------------------------------------------
 
-function Step-Scan {
-    $receiptPath = Join-Path $script:LogDir ($script:Today + '_scan.json')
-    $errPath = Join-Path $script:LogDir ($script:Today + '_scan.err')
-    $stateReceipt = Join-Path $script:StateDir 'last_scan.json'
-    New-Item -ItemType Directory -Path $script:StateDir -Force | Out-Null
+function Get-ProviderScanArguments {
+    # The scan.mjs arguments for one provider company. --company limits the scan to that company; --since is the window.
+    param([string]$Company, [int]$Days)
+    return @('scan.mjs', '--company', $Company, '--since', "$Days", '--json')
+}
 
-    if ($SkipScan) {
-        Write-Log 'Step 1/5  scan skipped (-SkipScan); using state\last_scan.json' 'STEP'
-        return [pscustomobject]@{ Receipt = (Read-Receipt $stateReceipt); ErrFile = $errPath; Skipped = $true }
-    }
+function Get-ProviderCompanies {
+    # Companies whose board only career-ops can read (Apple, Google, Pinpoint ones), from config\companies.yaml.
+    param([string]$WorkDir)
+    $code = "from board.fetch.boards import load_boards; print(chr(10).join(b['name'] for b in load_boards() if b['ats'] == 'scanmjs'))"
+    $res = Invoke-Logged -Exe 'python' -Arguments @('-c', $code) -WorkDir $WorkDir
+    if ($res.ExitCode -ne 0) { return @() }
+    return @($res.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
 
-    Write-Log ("Step 1/5  career-ops scan (node scan.mjs --since {0} --json), whole boards, about 10-20 minutes" -f $Days) 'STEP'
+function Step-Providers {
+    # scan.mjs exits 2 when ANY board failed and 1 on a fatal error. A failed provider is a warning: the Python run still goes ahead.
     $env:CAREER_OPS_ROOT = Join-Path $script:Root 'career-ops-data'
-    $started = Get-Date
-    $proc = Start-Process -FilePath 'node' -ArgumentList @('scan.mjs', '--since', "$Days", '--json') `
-        -WorkingDirectory (Join-Path $script:Root 'career-ops') -NoNewWindow -PassThru `
-        -RedirectStandardOutput $receiptPath -RedirectStandardError $errPath
-    $null = $proc.Handle          # cache the handle so ExitCode is readable after the process ends (PowerShell 5.1 quirk)
-    $last = ''
-    while (-not $proc.HasExited) {
-        Start-Sleep -Seconds 5
-        Show-ScanProgress -ErrFile $errPath -Last ([ref]$last)
+    $days = (& python -c "from board import config; print(config.filters_config()['days'])" 2>$null)
+    if (-not $days) { $days = 4 }
+    $companies = @(Get-ProviderCompanies -WorkDir $script:Root)
+    if ($companies.Count -eq 0) { Write-Log 'No provider companies to scan with scan.mjs.' 'LOG'; return }
+    Write-Host ("Refreshing {0} with scan.mjs (use -SkipProviders to skip)..." -f ($companies -join ', '))
+    foreach ($c in $companies) {
+        $res = Invoke-Logged -Exe 'node' -Arguments (Get-ProviderScanArguments -Company $c -Days ([int]$days)) -WorkDir (Join-Path $script:Root 'career-ops')
+        if ($res.ExitCode -ne 0 -and $res.ExitCode -ne 2) {
+            Write-Log ("scan.mjs for {0} exited with code {1}; it may be out of date." -f $c, $res.ExitCode) 'WARN'
+        }
     }
-    $proc.WaitForExit()
-    $code = $proc.ExitCode
-    $secs = [int]((Get-Date) - $started).TotalSeconds
-    Add-LogRaw '--- scan stderr ---'
-    if (Test-Path $errPath) { Get-Content $errPath -Encoding UTF8 | ForEach-Object { Add-LogRaw ("    " + $_) } }
-    Add-LogRaw '--- end scan stderr ---'
-    Write-Log ("Scan finished in {0}s with exit code {1}" -f $secs, $code)
-
-    $receipt = Read-Receipt $receiptPath
-    $script:LastScan = [pscustomobject]@{ Receipt = $receipt; ErrFile = $errPath; Skipped = $false }
-    if (Test-AllBoardsFailed -ExitCode $code -Receipt $receipt) {
-        throw (New-StepFailure 'Step 1 (scan)' 'every board failed. Check your internet connection (and any VPN or proxy), then run jobboard again.' 2)
-    }
-    if ($code -eq 1 -or ($code -ne 0 -and $code -ne 2)) {
-        $tail = ''
-        if (Test-Path $errPath) { $tail = (Get-Content $errPath -Tail 8 -Encoding UTF8) -join ' | ' }
-        throw (New-StepFailure 'Step 1 (scan)' ("scan.mjs exited with code {0}. Last output: {1}" -f $code, $tail) 1)
-    }
-    if ($null -eq $receipt) {
-        throw (New-StepFailure 'Step 1 (scan)' ("the scan finished (exit {0}) but wrote no readable receipt to {1}" -f $code, $receiptPath) 1)
-    }
-    Copy-Item -Path $receiptPath -Destination $stateReceipt -Force
-    $errored = Get-ErroredBoards $receipt
-    if ($errored.Count -gt 0) {
-        Write-Log ("{0} board(s) errored; the rest were read:" -f $errored.Count) 'WARN'
-        $errored | ForEach-Object { Write-Log ("  - " + $_) 'WARN' }
-    }
-    Write-Log ("Receipt saved to {0}" -f $receiptPath) 'OK'
-    return [pscustomobject]@{ Receipt = $receipt; ErrFile = $errPath; Skipped = $false }
 }
 
 function Step-Board {
-    Write-Log 'Step 2/5  build the board (python -m board run)' 'STEP'
-    $lastRun = Join-Path $script:StateDir 'last_run.json'
-    if (Test-Path $lastRun) { Remove-Item $lastRun -Force }
+    Write-Log 'python -m board run' 'LOG'
     [void](Wait-MasterUnlocked -Path $script:Master -Seconds $LockWaitSeconds)
     $env:CAREER_OPS_ROOT = Join-Path $script:Root 'career-ops-data'
     $env:PYTHONIOENCODING = 'utf-8'
-    $res = Invoke-Logged -Exe 'python' -Arguments @('-m', 'board', 'run') -WorkDir $script:Root
-    if ($res.ExitCode -ne 0) {
-        $msg = @($res.Lines | Where-Object { $_ -match '^error:' } | Select-Object -First 1)
-        $why = if ($msg.Count -gt 0) { $msg[0] } else { ("python -m board run exited with code {0}; see the log above" -f $res.ExitCode) }
-        throw (New-StepFailure 'Step 2 (board run)' $why 1)
-    }
-    if (-not (Test-Path $lastRun)) {
-        throw (New-StepFailure 'Step 2 (board run)' 'it finished but wrote no state\last_run.json summary' 1)
-    }
-    Write-Log 'Board built.' 'OK'
-    return (Get-Content $lastRun -Raw -Encoding UTF8 | ConvertFrom-Json)
-}
-
-function Step-Review {
-    Write-Log 'Step 3/5  review the top 25 (claude -p "/review")' 'STEP'
-    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
-        throw (New-StepFailure 'Step 3 (review)' 'the claude command is not on PATH. Install Claude Code, or run /review inside Claude Code.' 1)
-    }
-    [void](Wait-MasterUnlocked -Path $script:Master -Seconds $LockWaitSeconds)
-    $res = Invoke-Logged -Exe 'claude' -WorkDir $script:Root -Arguments @(
-        '-p', '/review', '--allowedTools', 'Bash(python -m board review:*)', 'Read', 'Write')
-    if ($res.ExitCode -ne 0) {
-        $tail = ($res.Lines | Select-Object -Last 3) -join ' | '
-        throw (New-StepFailure 'Step 3 (review)' ("claude exited with code {0}. {1}" -f $res.ExitCode, $tail) 1)
-    }
-    Write-Log 'Review finished.' 'OK'
-}
-
-function Show-Summary {
-    param($ScanResult, $Run)
-    Write-Host ''
-    Write-Log '================ SUMMARY ================' 'STEP'
-    $r = if ($null -ne $ScanResult) { $ScanResult.Receipt } else { $null }
-    if ($null -ne $r) {
-        $note = if ($ScanResult.Skipped) { ' (from the previous scan)' } else { '' }
-        Write-Log ("Companies scanned: {0}{1}   jobs seen: {2}   new postings added by scan: {3}" -f $r.scanned, $note, $r.found, $r.added)
-        $errored = Get-ErroredBoards $r
-        if ($errored.Count -eq 0) { Write-Log 'Boards that errored: none' }
-        else {
-            Write-Log ("Boards that errored: {0}" -f $errored.Count) 'WARN'
-            $errored | ForEach-Object { Write-Log ("  - " + $_) 'WARN' }
-        }
-        $partial = Get-PartialBoardWarnings $ScanResult.ErrFile
-        if ($partial.Count -gt 0) {
-            Write-Log ("Boards only partly read: {0} (see the log)" -f $partial.Count) 'WARN'
-            $partial | Select-Object -First 6 | ForEach-Object { Write-Log ("  - " + $_) 'WARN' }
-        }
-    } else {
-        Write-Log 'Companies scanned: n/a (no scan receipt)' 'WARN'
-    }
-    if ($null -ne $Run) {
-        $fn = $Run.funnel
-        if ($null -ne $fn) {
-            Write-Log 'Funnel (postings standing after each step):'
-            foreach ($s in @($fn.steps)) { Write-Log ("  step {0} {1}: {2}" -f $s.step, $s.name, $s.out) }
-        }
-        Write-Log ("Roles found: {0}   kept: {1}   hidden: {2}   new since last run: {3}" -f $Run.roles_found, $Run.kept, $Run.hidden, $Run.new)
-        $g = $Run.gate
-        if ($null -ne $g -and $g.enabled) {
-            Write-Log ("career-ops gate: checked {0}, closed {1}, evaluated {2} (cached {3}), hidden as low fit {4}" -f $g.checked, $g.closed, $g.evaluated, $g.cached, $g.low_fit)
-            foreach ($e in @($g.errors)) { if ($e) { Write-Log ("  ! {0} | {1}: {2}" -f $e.company, $e.title, $e.error) 'WARN' } }
-        }
-        Write-Log ("Board now holds {0} roles. Master: {1}" -f $Run.board_total, $Run.master)
-        $rules = $Run.hidden_by_rule.PSObject.Properties | ForEach-Object { "{0}: {1}" -f $_.Name, $_.Value }
-        if ($rules) { Write-Log ("Hidden by rule: " + ($rules -join ', ')) }
-        foreach ($n in @($Run.notes)) { if ($n) { Write-Log ("NOTE: " + $n) 'WARN' } }
-    } else {
-        Write-Log 'Roles found / kept / hidden: n/a (the board step did not finish)' 'WARN'
-    }
-    if ($script:Failures.Count -gt 0) {
-        Write-Log 'Steps that failed:' 'ERROR'
-        $script:Failures | ForEach-Object { Write-Log ("  - " + $_) 'ERROR' }
-    }
-    Write-Log ("Log: {0}" -f $script:LogFile)
+    $arguments = Get-BoardArguments -Only $Only -Full:$Full -BoardTimeout $BoardTimeout
+    return (Invoke-Logged -Exe 'python' -Arguments $arguments -WorkDir $script:Root -Echo)
 }
 
 function Step-Open {
-    param($Run)
-    $target = $script:Master
-    if ($null -ne $Run -and $Run.master -and (Test-Path $Run.master)) { $target = $Run.master }
-    if ($NoOpen) { Write-Log 'Step 5/5  not opening Excel (-NoOpen)' 'STEP'; return }
-    Write-Log 'Step 5/5  open the master workbook' 'STEP'
-    if (-not (Test-Path $target)) {
-        throw (New-StepFailure 'Step 5 (open Excel)' ("{0} does not exist" -f $target) 1)
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        Write-Log ("Cannot open {0}: it does not exist." -f $Path) 'ERROR'
+        return $false
     }
     try {
-        Start-Process -FilePath $target
-        Write-Log ("Opened {0}" -f $target) 'OK'
+        Start-Process -FilePath $Path
+        return $true
     } catch {
-        throw (New-StepFailure 'Step 5 (open Excel)' ("could not open {0}: {1}" -f $target, $_.Exception.Message) 1)
+        Write-Log ("Could not open {0}: {1}" -f $Path, $_.Exception.Message) 'ERROR'
+        return $false
     }
 }
 
@@ -368,63 +252,33 @@ function Main {
     New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     Add-LogRaw ''
-    Write-Log ("===== jobboard run {0}  (Review={1} NoOpen={2} Days={3} SkipScan={4}) =====" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Review, $NoOpen, $Days, $SkipScan)
+    Write-Log ("===== jobboard run {0}  (Open={1} Only={2} Full={3} SkipProviders={4}) =====" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Open, ($Only -join ','), $Full, $SkipProviders) 'LOG'
 
-    foreach ($tool in @('node', 'python')) {
-        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-            Write-Log ("{0} is not on PATH. Install it and open a new terminal." -f $tool) 'ERROR'
-            return 3
-        }
-    }
-    if (-not (Test-Path (Join-Path $script:Root 'career-ops\scan.mjs'))) {
-        Write-Log 'career-ops\scan.mjs not found. Clone and install career-ops first (see README.md).' 'ERROR'
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Log 'python is not on PATH. Install it and open a new terminal.' 'ERROR'
         return 3
     }
-
-    $scan = $null
-    $run = $null
+    if (-not $SkipProviders -and -not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Log 'node is not on PATH, so the Apple / Google / Pinpoint step cannot run. Install Node, or run jobboard -SkipProviders.' 'ERROR'
+        return 3
+    }
     try {
-        try {
-            $scan = Step-Scan
-        } catch {
-            if ($_.Exception.Data['ExitCode']) {
-                $script:Failures.Add($_.Exception.Message) | Out-Null
-                Write-Log $_.Exception.Message 'ERROR'
-                Show-Summary -ScanResult $script:LastScan -Run $null
-                return [int]$_.Exception.Data['ExitCode']       # 2 = every board failed, 1 = scan error: stop before step 2
-            }
-            throw
-        }
-        try {
-            $run = Step-Board
-        } catch {
-            if ($_.Exception.Data['ExitCode']) {
-                $script:Failures.Add($_.Exception.Message) | Out-Null
-                Write-Log $_.Exception.Message 'ERROR'
-                Show-Summary -ScanResult $scan -Run $null
-                return 1
-            }
-            throw
-        }
-        if ($Review) {
-            try { Step-Review } catch {
-                if ($_.Exception.Data['ExitCode']) { $script:Failures.Add($_.Exception.Message) | Out-Null; Write-Log $_.Exception.Message 'ERROR' } else { throw }
-            }
-        } else {
-            Write-Log 'Step 3/5  review skipped (add -Review to run it, or use /review in Claude Code)' 'STEP'
-        }
-        Write-Log 'Step 4/5  summary' 'STEP'
-        Show-Summary -ScanResult $scan -Run $run
-        try { Step-Open -Run $run } catch {
-            if ($_.Exception.Data['ExitCode']) { $script:Failures.Add($_.Exception.Message) | Out-Null; Write-Log $_.Exception.Message 'ERROR' } else { throw }
-        }
+        if (-not $SkipProviders) { Step-Providers }
+        $res = Step-Board
     } catch {
-        $msg = "Unexpected error at {0}: {1}" -f $_.InvocationInfo.PositionMessage.Trim(), $_.Exception.Message
-        Write-Log $msg 'ERROR'
+        Write-Log ("Unexpected error at {0}: {1}" -f $_.InvocationInfo.PositionMessage.Trim(), $_.Exception.Message) 'ERROR'
         return 1
     }
-    if ($script:Failures.Count -gt 0) { return 1 }
-    Write-Log 'Done.' 'OK'
+    $code = Get-BoardExitCode -PythonExit $res.ExitCode
+    if ($code -ne 0) {
+        Write-Log (Get-FailureHint -Code $code) 'ERROR'
+        return $code
+    }
+    if ($Open) {
+        $target = Get-ExcelPathFromOutput -Lines $res.Lines -Default $script:Master
+        if (-not (Step-Open -Path $target)) { return 1 }
+    }
+    Write-Log 'Done.' 'LOG'
     return 0
 }
 

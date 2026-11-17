@@ -16,29 +16,29 @@ It never submits an application and never contacts anyone. You decide and send.
 From any PowerShell window:
 
 ```powershell
-jobboard              # scan, build the board, print a summary, open Excel
-jobboard -Review      # also write "Why it fits" / "Gaps" for the top 25 (uses Claude Code)
-jobboard -NoOpen      # do not open Excel
-jobboard -Days 7      # scan window in days (default 3)
-jobboard -SkipScan    # rebuild the board from the last scan
+jobboard              # fetch, filter, score; writes output\jobs_latest.md and the Excel board; prints a 20-line summary
+jobboard -Open        # same, then open JobBoard_Master.xlsx in Excel
+jobboard -Only Stripe,greenhouse   # fetch only these companies or ATS names (testing)
+jobboard -Full        # pull every posting from Workday / Eightfold / Oracle / SmartRecruiters / Amazon (slow, testing)
+jobboard -SkipProviders             # skip the node scan.mjs step for Apple, Google and Pinpoint (that step runs by default and is slow)
 ```
 
-Or double-click `jobboard.cmd`. From Claude Code, `/scan` runs the same script.
+Or double-click `jobboard.cmd`. In Claude Code, open the board with `/jobs`. Claude never runs or waits on the pipeline; you run `jobboard`.
 
-Steps, in order: (1) `node scan.mjs --since 3 --json` in `career-ops\` (whole boards, about 10 to 20 minutes), receipt to `logs\<date>_scan.json`; (2) `python -m board run`; (3) `claude -p "/review"` with `-Review`; (4) summary: companies scanned, boards that errored, roles found / kept / hidden, new since last run; (5) open the master in Excel.
+`jobboard.ps1` first refreshes Apple, Google and Pinpoint with `node scan.mjs --company <name>` (skip with `-SkipProviders`), then runs `python -m board run`: no Claude calls, no tokens. Python fetches the ATS APIs, filters, scores and writes `output\jobs_latest.md` (the file Claude reads), `output\jobs_<date>.md`, `output\JobBoard_Master.xlsx` and a dated snapshot. The posting window (4 days) is `days` in `config\filters.yaml`.
 
-- Everything is logged to `logs\<date>.log`. If a step fails, the summary names the step and why.
-- If every board fails (no internet, VPN, proxy), the run stops after step 1 with exit code 2 and tells you to check your connection.
+- Everything is logged to `logs\<date>.log`; the long detail (every board, the funnel, 25 sample drops) is in `logs\board_<date>.log`.
+- If every board fails (no internet, VPN, proxy), the run exits with code 2 and tells you to check your connection.
 - If `JobBoard_Master.xlsx` is open in Excel, the script warns you to close it and waits (up to 5 minutes). If it stays open, the board saves a timestamped copy next to it and says so.
-- Exit codes: 0 ok, 1 a step failed, 2 every board failed, 3 a prerequisite is missing.
+- Exit codes: 0 ok, 1 the run failed, 2 every board failed, 3 a prerequisite is missing or the workbook could not be written.
 - Nothing is scheduled. There is no Task Scheduler entry; you run it when you want.
 
 ### Slash commands (Claude Code, run from this folder)
 
 | Command | What it does |
 |---|---|
-| `/scan [days]` | Runs `jobboard.ps1` (scan and board), then `/review`. |
-| `/review [N]` | Reads the top 25 rows, each `JD.md` and your resume; writes one-line "Why it fits" and "Gaps". Re-ranks only if a JD clearly contradicts the rule score, with a reason and a verbatim JD quote. |
+| `/jobs` | Reads `output\jobs_latest.md` (warns if it is not from today, never scans), gives every role a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap, and writes `output\reviews\Claude_Review_<date>.xlsx` through `board/write_review.py`. |
+| `/review` | Retired. Use `/jobs`. |
 | `/apply <id>` | Builds the resume and cover letter PDFs for that role, writes `GapCheck.md`, puts the paths in Excel, sets Status = Docs Ready. |
 | `/mark <id> <status>` | Sets Status (New, Interested, Docs Ready, Applied, Interviewing, Rejected, Offer, Skip); Applied also sets Applied Date. |
 
@@ -79,7 +79,7 @@ Requirements: Windows 10/11, Windows PowerShell 5.1, Node 22+, Python 3.12+, Exc
 jobboard.ps1 / jobboard.cmd   the one-command run
 board/                        Python package (ingest, jd, extract, filters, score, excel, review, applications)
 config/                       companies.yaml, filters.yaml, scoring.yaml, candidate.yaml
-.claude/commands/             /scan /review /apply /mark
+.claude/commands/             /jobs /apply /mark (/review is a pointer to /jobs)
 inputs/                       resume, LinkedIn profile, Harvard CV guide (personal; repo is private)
 tests/                        pytest suite and PowerShell helper tests
 career-ops/                   scanner clone (git-ignored)

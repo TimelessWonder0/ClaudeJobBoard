@@ -1,7 +1,7 @@
 # Unit tests for the helper functions in jobboard.ps1. Run: powershell -NoProfile -File tests\jobboard.tests.ps1
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $here '..\jobboard.ps1') -NoOpen        # dot-sourcing defines the functions and does not run Main
+. (Join-Path $here '..\jobboard.ps1')        # dot-sourcing defines the functions and does not run Main
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('jobboard_tests_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -13,34 +13,44 @@ function Assert-That {
     param([string]$Name, [bool]$Condition)
     if ($Condition) { Write-Host ("  ok    " + $Name) } else { Write-Host ("  FAIL  " + $Name) -ForegroundColor Red; $script:failed++ }
 }
-function New-Receipt {
-    param([int]$Scanned, [int]$Found, [string[]]$ErrorCompanies = @(), [string[]]$UnverifiedZero = @())
-    $errs = @($ErrorCompanies | ForEach-Object { [pscustomobject]@{ company = $_; error = 'fetch failed' } })
-    return [pscustomobject]@{ version = 'careerops.scan.receipt@1'; scanned = $Scanned; found = $Found; added = 0; errors = $errs; unverified_zero = $UnverifiedZero }
-}
 
 try {
-    Write-Host 'Test-AllBoardsFailed'
-    $names = 1..49 | ForEach-Object { "Co$_" }
-    Assert-That 'exit 0 is never "all failed"' (-not (Test-AllBoardsFailed -ExitCode 0 -Receipt (New-Receipt 49 100)))
-    Assert-That 'exit 2 with no readable receipt is all failed' (Test-AllBoardsFailed -ExitCode 2 -Receipt $null)
-    Assert-That 'exit 2, every board errored' (Test-AllBoardsFailed -ExitCode 2 -Receipt (New-Receipt 49 0 $names))
-    Assert-That 'exit 2, 3 of 49 errored and jobs found: partial, continue' (-not (Test-AllBoardsFailed -ExitCode 2 -Receipt (New-Receipt 49 500 $names[0..2])))
-    Assert-That 'exit 2, 48 errored + 1 unverified zero is all failed' (Test-AllBoardsFailed -ExitCode 2 -Receipt (New-Receipt 49 0 $names[0..47] @('Co49')))
-    Assert-That 'exit 2, nothing found and errors present is all failed' (Test-AllBoardsFailed -ExitCode 2 -Receipt (New-Receipt 49 0 $names[0..4]))
-    Assert-That 'exit 1 is a fatal error, not "all failed"' (-not (Test-AllBoardsFailed -ExitCode 1 -Receipt (New-Receipt 49 0 $names)))
+    Write-Host 'Get-BoardArguments'
+    Assert-That 'default is exactly python -m board run' ((@(Get-BoardArguments) -join ' ') -eq '-m board run')
+    Assert-That '-Only adds the names after --only' ((@(Get-BoardArguments -Only @('Stripe', 'greenhouse')) -join ' ') -eq '-m board run --only Stripe greenhouse')
+    Assert-That '-Full adds --full' ((@(Get-BoardArguments -Full) -join ' ') -eq '-m board run --full')
+    Assert-That '-BoardTimeout adds the limit' ((@(Get-BoardArguments -BoardTimeout 120) -join ' ') -eq '-m board run --board-timeout 120')
+    Assert-That 'a zero timeout is left to the config' ((@(Get-BoardArguments -BoardTimeout 0) -join ' ') -eq '-m board run')
+    $all = (@(Get-BoardArguments -Only @('x') -Full -BoardTimeout 30) -join ' ')
+    Assert-That 'no combination ever asks for Claude' (($all -notmatch 'claude') -and ($all -notmatch 'with-claude'))
 
-    Write-Host 'Read-Receipt / Get-ErroredBoards'
-    $good = Join-Path $tmp 'good.json'; (New-Receipt 5 10 @('Foo')) | ConvertTo-Json -Depth 5 | Set-Content $good -Encoding UTF8
-    $bad = Join-Path $tmp 'bad.json'; 'not json' | Set-Content $bad
-    $empty = Join-Path $tmp 'empty.json'; '' | Set-Content $empty
-    Assert-That 'valid receipt parses' ($null -ne (Read-Receipt $good))
-    Assert-That 'invalid receipt gives null' ($null -eq (Read-Receipt $bad))
-    Assert-That 'empty receipt gives null' ($null -eq (Read-Receipt $empty))
-    Assert-That 'missing receipt gives null' ($null -eq (Read-Receipt (Join-Path $tmp 'nope.json')))
-    $errored = @(Get-ErroredBoards (Read-Receipt $good))
-    Assert-That 'errored boards are listed with the message' ($errored.Count -eq 1 -and $errored[0] -eq 'Foo (fetch failed)')
-    Assert-That 'no receipt means no errored boards' (@(Get-ErroredBoards $null).Count -eq 0)
+    Write-Host 'Get-ProviderScanArguments / Get-ProviderCompanies'
+    Assert-That 'one scan.mjs run per provider, limited with --company' ((@(Get-ProviderScanArguments -Company 'Apple' -Days 4) -join ' ') -eq 'scan.mjs --company Apple --since 4 --json')
+    Assert-That 'the window comes from the caller, not a constant' ((@(Get-ProviderScanArguments -Company 'CFRA' -Days 7) -join ' ') -eq 'scan.mjs --company CFRA --since 7 --json')
+    $providers = @(Get-ProviderCompanies -WorkDir (Join-Path $here '..'))
+    Assert-That 'the provider companies come from companies.yaml (Apple, Google, CFRA)' (($providers -contains 'Apple') -and ($providers -contains 'Google') -and ($providers -contains 'CFRA'))
+    Assert-That 'a Greenhouse company is not a provider' ($providers -notcontains 'Stripe')
+
+    Write-Host 'Get-BoardExitCode / Get-FailureHint'
+    Assert-That 'python 0 is ok' ((Get-BoardExitCode -PythonExit 0) -eq 0)
+    Assert-That 'python 2 is every board failed' ((Get-BoardExitCode -PythonExit 2) -eq 2)
+    Assert-That 'python 3 is could not write the workbook' ((Get-BoardExitCode -PythonExit 3) -eq 3)
+    Assert-That 'python 1 and anything else is a failed run' (((Get-BoardExitCode -PythonExit 1) -eq 1) -and ((Get-BoardExitCode -PythonExit 255) -eq 1))
+    Assert-That 'each failure code has a hint' (((Get-FailureHint -Code 2) -match 'internet') -and ((Get-FailureHint -Code 3) -match 'Close JobBoard_Master') -and ((Get-FailureHint -Code 1) -match 'failed'))
+
+    Write-Host 'Get-ExcelPathFromOutput'
+    $lines = @('Job board 2026-11-16  window 4d', 'Board: output\jobs_latest.md', 'Excel: C:\x\output\JobBoard_Master.xlsx', 'Detail: logs\b.log')
+    Assert-That 'the Excel line is read from the board summary' ((Get-ExcelPathFromOutput -Lines $lines -Default 'D') -eq 'C:\x\output\JobBoard_Master.xlsx')
+    Assert-That 'a timestamped copy is found too' ((Get-ExcelPathFromOutput -Lines @('Excel: C:\x\JobBoard_Master_20261116_0900.xlsx') -Default 'D') -eq 'C:\x\JobBoard_Master_20261116_0900.xlsx')
+    Assert-That 'no Excel line falls back to the default' ((Get-ExcelPathFromOutput -Lines @('nothing') -Default 'D') -eq 'D')
+
+    Write-Host 'Write-Log'
+    Write-Log 'quiet line' 'LOG'
+    Write-Log 'loud line' 'INFO'
+    $logText = Get-Content $script:LogFile -Raw
+    Assert-That 'both levels reach the log file' (($logText -match 'quiet line') -and ($logText -match 'loud line'))
+    $console = & { Write-Log 'only for the file' 'LOG' } 6>&1 | Out-String
+    Assert-That 'level LOG prints nothing to the console' ($console.Trim().Length -eq 0)
 
     Write-Host 'Test-FileLocked / Wait-MasterUnlocked'
     $xlsx = Join-Path $tmp 'JobBoard_Master.xlsx'; 'x' | Set-Content $xlsx
@@ -56,16 +66,21 @@ try {
     Assert-That 'released file returns true at once' (Wait-MasterUnlocked -Path $xlsx -Seconds 3)
     Assert-That 'the lock warning was logged' ((Get-Content $script:LogFile -Raw) -match 'open in Excel')
 
-    Write-Host 'Get-PartialBoardWarnings'
-    $err = Join-Path $tmp 'scan.err'
-    "ok line`n[x] workday: NVIDIA offset-clamped at 2000 - recovered 558 jobs (still incomplete)`n eightfold: Microsoft truncated at max_pages=200`nfine" | Set-Content $err
-    Assert-That 'capped and truncated boards are reported' (@(Get-PartialBoardWarnings $err).Count -eq 2)
-
     Write-Host 'Invoke-Logged'
     $r = Invoke-Logged -Exe 'cmd.exe' -Arguments @('/c', 'echo hello & exit /b 3') -WorkDir $tmp
     Assert-That 'native exit code is returned' ($r.ExitCode -eq 3)
     $trimmed = @($r.Lines | ForEach-Object { $_.Trim() })
     Assert-That 'native output is captured and logged' (($trimmed -contains 'hello') -and ((Get-Content $script:LogFile -Raw) -match 'hello'))
+    $echoed = & { Invoke-Logged -Exe 'cmd.exe' -Arguments @('/c', 'echo shown') -WorkDir $tmp -Echo | Out-Null } 6>&1 | Out-String
+    Assert-That '-Echo prints the line unindented' ($echoed -match '(?m)^shown\s*$')
+    $quiet = & { Invoke-Logged -Exe 'cmd.exe' -Arguments @('/c', 'echo hidden') -WorkDir $tmp | Out-Null } 6>&1 | Out-String
+    Assert-That 'without -Echo the console stays quiet' ($quiet.Trim().Length -eq 0)
+
+    Write-Host 'the script itself'
+    $src = Get-Content (Join-Path $here '..\jobboard.ps1') -Raw
+    Assert-That 'jobboard.ps1 never starts claude' (($src -notmatch "Get-Command claude") -and ($src -notmatch "Exe 'claude'") -and ($src -notmatch '-p\s+/review'))
+    Assert-That 'Excel opens only with -Open (no -NoOpen switch is left)' (($src -match '\[switch\]\$Open') -and ($src -notmatch 'NoOpen'))
+    Assert-That 'the providers step runs unless -SkipProviders is given (no -ScanProviders switch is left)' (($src -match '\[switch\]\$SkipProviders') -and ($src -match 'if \(-not \$SkipProviders\) \{ Step-Providers \}') -and ($src -notmatch 'ScanProviders'))
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

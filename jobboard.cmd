@@ -1,6 +1,6 @@
 @echo off
-rem Double-click or run from any folder: scans, builds the Excel board, opens it.
-rem Extra switches pass through, e.g.  jobboard.cmd -Review   or   jobboard.cmd -NoOpen
+rem Double-click or run from any folder: fetches, filters, scores, writes output\jobs_latest.md and the Excel board.
+rem Extra switches pass through, e.g.  jobboard.cmd -Open   or   jobboard.cmd -Only Stripe
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0jobboard.ps1" %*
 set JB_EXIT=%ERRORLEVEL%
 

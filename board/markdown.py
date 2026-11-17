@@ -136,3 +136,80 @@ def write(result: dict, ids: dict[str, int], board_nums: list[int], out_dir: Pat
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
     return latest, dated
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# reading jobs_latest.md back (the review workbook and its tests use this; nothing here reads an .xlsx)
+# ---------------------------------------------------------------------------------------------------------------------
+
+_ROLE = re.compile(r"^### \[(\d+)\] ([\d.]+) · (.+?) · (.+)$")
+_SECTION = re.compile(r"^## (Board|Date unconfirmed|Hidden) \((\d+)\)\s*$")
+
+
+def parse(text: str) -> dict:
+    """jobs_latest.md -> {"header": {...}, "board": [role], "unconfirmed": [role], "hidden": [{id, line}]}.
+
+    A role is {id, score, tier, track, title, company, city, work_mode, posted, date_flag, years, pay, training, requirements,
+    flags, link, jd_path}. `date_flag` is "" for a confirmed date, else the reason.
+    """
+    header: dict[str, str] = {}
+    out: dict = {"header": header, "board": [], "unconfirmed": [], "hidden": []}
+    section, role = "header", None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        m = _SECTION.match(line)
+        if m:
+            section = {"Board": "board", "Date unconfirmed": "unconfirmed", "Hidden": "hidden"}[m.group(1)]
+            role = None
+            header["count_" + section] = m.group(2)
+            continue
+        if section == "header":
+            if line.startswith("# Job board"):
+                header["title"] = line[2:]
+            elif line.startswith("- ") and ": " in line:
+                key, _, val = line[2:].partition(": ")
+                header[key.strip().lower()] = val.strip()
+            continue
+        if section == "hidden":
+            h = re.match(r"^- \[(\d+)\] (.+)$", line)
+            if h:
+                out["hidden"].append({"id": int(h.group(1)), "line": h.group(2)})
+            continue
+        m = _ROLE.match(line)
+        if m:
+            rest = m.group(4)
+            body, _, company = rest.rpartition(" — ")
+            track, _, title = body.partition(" — ")
+            role = {"id": int(m.group(1)), "score": float(m.group(2)), "tier": m.group(3), "track": track, "title": title,
+                    "company": company, "city": "", "work_mode": "", "posted": "", "date_flag": "", "years": "", "pay": "",
+                    "training": "", "requirements": [], "flags": "", "link": "", "jd_path": ""}
+            out[section].append(role)
+            continue
+        if role is None:
+            continue
+        if line.startswith("- City: "):
+            for part in line[2:].split(" · "):
+                key, _, val = part.partition(": ")
+                key = key.strip().lower()
+                if key == "city":
+                    role["city"] = val
+                elif key == "work mode":
+                    role["work_mode"] = val
+                elif key == "posted":
+                    flag = re.match(r"^DATE UNCONFIRMED \((.*)\)$", val)
+                    role["posted"], role["date_flag"] = ("", flag.group(1)) if flag else (val, "")
+                elif key == "years required":
+                    role["years"] = val
+                elif key == "pay":
+                    role["pay"] = val
+        elif line.startswith("- Training: "):
+            role["training"] = line[len("- Training: "):]
+        elif line.startswith("  > "):
+            role["requirements"].append(line[4:])
+        elif line.startswith("- Flags: "):
+            role["flags"] = line[len("- Flags: "):]
+        elif line.startswith("- Link: "):
+            role["link"] = line[len("- Link: "):]
+        elif line.startswith("- JD file: "):
+            role["jd_path"] = line[len("- JD file: "):]
+    return out

@@ -6,32 +6,33 @@ Personal daily job board for Shreyas Kukanur. Runs on Windows 11 (Windows PowerS
 
 Every day: find finance roles at my target companies posted in the last 4 days and within my reach, score them against my resume, and write `output\jobs_latest.md` (the file Claude reads) plus a dated Excel board I can sort and mark Applied. When I pick a role, build a tailored resume and cover letter PDF for it.
 
-**Rebuild in progress (branch `rebuild/python-pipeline`).** Python now does all fetching, filtering and scoring: `python -m board run` fetches the ATS APIs directly, applies the rules below, scores, and writes `jobs_latest.md`, `jobs_<date>.md` and the Excel board, with **zero Claude calls** unless `--with-claude` is passed. The `jobboard` command and the slash commands below still describe the old flow (`scan.mjs` first, then `/review` from the xlsx) until they are rewired; where they disagree with this file's pipeline sections, this file wins.
+**Rebuild in progress (branch `rebuild/python-pipeline`).** Python does all fetching, filtering and scoring. `jobboard` runs `python -m board run`, which fetches the ATS APIs directly, applies the rules below, scores, and writes `jobs_latest.md`, `jobs_<date>.md` and the Excel board, with **zero Claude calls** unless `--with-claude` is passed to `python -m board run` (the `jobboard` command never passes it). `/review` and `/apply` still read the xlsx and are being rewired to read `jobs_latest.md` and the role's saved JD file; where they disagree with this file, this file wins.
 
 ## How to run it
 
 **One command, from any folder** (the `jobboard` function lives in `$PROFILE`; `jobboard.cmd` does the same on double-click):
 
 ```
-jobboard             # scan, build the Excel board, summary, open Excel
-jobboard -Review     # same, plus claude -p "/review" so the top 25 get Why it fits / Gaps
-jobboard -NoOpen     # do not open Excel at the end
-jobboard -Days 7     # scan window in days (default 3)
-jobboard -SkipScan   # rebuild the board from the last scan only
+jobboard                  # fetch, filter, score; writes output\jobs_latest.md and the Excel board; 20-line summary
+jobboard -Open            # same, then open JobBoard_Master.xlsx in Excel
+jobboard -Only Stripe,greenhouse   # fetch only these companies / ATS names (testing)
+jobboard -Full            # pull every posting from Workday / Eightfold / Oracle / SmartRecruiters / Amazon (slow, testing)
+jobboard -SkipProviders   # skip the node scan.mjs step for Apple, Google and Pinpoint (that step runs by default and is slow)
 ```
 
-`C:\ClaudeJobBoard\jobboard.ps1` runs, in order: (1) `node scan.mjs --since 3 --json` (whole boards, about 10-20 minutes) in `career-ops\`, receipt saved to `logs\<date>_scan.json` and `state\last_scan.json`; (2) `python -m board run`; (3) `claude -p "/review"` only with `-Review`; (4) a summary (companies scanned, boards that errored, roles found / kept / hidden, new since last run); (5) open `output\JobBoard_Master.xlsx` unless `-NoOpen`. Everything is logged to `logs\<date>.log`.
+`C:\ClaudeJobBoard\jobboard.ps1` first runs `node scan.mjs --company <name>` for each provider the Python fetchers do not cover (Apple, Google, Pinpoint; skipped with `-SkipProviders`), then `python -m board run`. Nothing else, and no Claude. The console shows the board's own summary, 20 lines at most; the log is `logs\<date>.log` and the detail is `logs\board_<date>.log`. The posting window is `days` in `config\filters.yaml`, not a script parameter.
 
-- Exit codes: 0 ok, 1 a step failed (the message names the step and why), 2 every board failed (check the internet; the run stops before step 2), 3 prerequisite missing.
-- `scan.mjs --json` exits 2 when **any** board failed, so exit 2 alone is not "all failed". The script decides from the receipt (errors plus `unverified_zero` against `scanned`).
+- Exit codes: 0 ok, 1 the run failed, 2 every board failed (check the internet), 3 prerequisite missing or the workbook could not be written.
 - If `JobBoard_Master.xlsx` is open in Excel the script warns, waits for it to be closed (`-LockWaitSeconds`, default 300), then continues. If it is still open the board saves a timestamped copy instead of overwriting.
+- Apple, Google and Pinpoint have no Python fetcher; `jobboard` refreshes them with `scan.mjs` by default; with `-SkipProviders` they show only what the last scan saw. A failed provider scan is a warning, not a failure.
 - **No Windows Task Scheduler task and no cron.** Runs happen only when I start them.
 - Keep `jobboard.ps1`, `jobboard.cmd` and `tests\jobboard.tests.ps1` plain ASCII (Windows PowerShell 5.1 reads BOM-less files as ANSI).
 
-**Slash commands** (`.claude\commands\`, same steps as the terminal):
+**Slash commands** (`.claude\commands\`):
 
-- `/scan [days]` runs `jobboard.ps1 -NoOpen`, then runs `/review` in the current session instead of spawning a nested `claude -p`.
-- `/review` writes "Why it fits" and "Gaps" for the top 25 rows; it may re-rank only with a reason and a verbatim JD quote.
+- `/jobs` reads `output\jobs_latest.md` first (warns if its run date is not today; never scans), gives the top 30 Board roles and the top 10 Date unconfirmed roles (by Python score) a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap; anything past the caps goes to Passed Over as "below cap" with its Python score, and writes `output\reviews\Claude_Review_<date>.xlsx` with `board/write_review.py` (sheets Picks, Date Unconfirmed, Passed Over, Run Info; never writes to the master).
+- **Claude never runs or waits on the pipeline.** There is no `/scan` command; I run `jobboard` myself.
+- `/review` is retired and only points to `/jobs`.
 - `/apply <id>` builds the resume and cover letter PDFs into `applications\<date>_<company>_<title>\`, writes `GapCheck.md`, puts the paths in Excel, sets Status = Docs Ready.
 - `/mark <id> <status>` sets Status (and Applied Date for Applied) in the master.
 
@@ -78,7 +79,7 @@ The board does not search for finance words. It pulls **every job at every scann
    - **Data root: `C:\ClaudeJobBoard\career-ops-data`**, set by the user-level environment variable `CAREER_OPS_ROOT` (`setx`; new shells only). It holds `portals.yml`, `cv.md`, `config/profile.yml`, `modes/`, and `data/` (including `scan-history.tsv`). It is outside version control on purpose. `jobboard.ps1` and `board/` set the variable themselves when they spawn node.
    - `onboard-write.mjs` writes to the checkout by default; always pass `--target C:\ClaudeJobBoard\career-ops-data`.
 2. `board/` — Python package: `fetch/` (per-ATS fetchers, date handling, prefilter), `dates` (UTC, America/Chicago window), `jd` (job descriptions, cached in `jobs\<id>_<company>_<title>\JD.md`), `extract` (years, degree, certs, work mode with the source sentence), `filters`, `score`, `pipeline`, `markdown` (`jobs_latest.md`), `excel`, `review`, `applications`, `cli`. `ingest` reads `scan-history.tsv` for the scan.mjs providers only.
-3. `jobboard.ps1` / `jobboard.cmd` — the one-command run. `.claude/commands/` — `/scan`, `/review`, `/apply`, `/mark`.
+3. `jobboard.ps1` / `jobboard.cmd` — the one-command run. `.claude/commands/` — `/jobs`, `/apply`, `/mark` (`/review` is a pointer to `/jobs`).
 
 State: `state/` (ID ledger `ids.json`, `reviews.json`, `overrides.json`, `last_scan.json`, `last_run.json`), `output/` (workbooks), `applications/` (PDFs), `jobs/` (JDs), `logs/`. All git-ignored.
 
