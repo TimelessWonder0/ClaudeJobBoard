@@ -12,6 +12,7 @@ from datetime import datetime
 
 from .. import config, dates
 from .base import BoardTimeout, NoBoard, RawJob, RawStore, find_salary, http_json, polite_sleep, to_text
+from .workday_facets import facet_query
 
 
 def _q(s: str) -> str:
@@ -20,11 +21,19 @@ def _q(s: str) -> str:
 
 def _keywords(b) -> list[str]:
     """Server-side search queries (fetch.keywords in filters.yaml); results are merged and deduped by job id.
-    `full` (python -m board run --full) pulls everything with an empty query, for testing."""
+    `full` (python -m board run --full) pulls everything with an empty query, for testing. A Workday tenant with a cached
+    finance facet is queried once with an empty search; one whose discovery found no finance category uses the short
+    fetch.workday_fallback_keywords."""
     if b.get("full"):
         return [""]
     fetch_cfg = config.filters_config()["fetch"]
-    return list(fetch_cfg["workday_keywords"] if b.get("ats") == "workday" else fetch_cfg["keywords"])
+    if b.get("ats") != "workday":
+        return list(fetch_cfg["keywords"])
+    if facet_query(b):
+        return [""]
+    if (b.get("facet") or {}).get("param") == "none":
+        return list(fetch_cfg["workday_fallback_keywords"])
+    return list(fetch_cfg["workday_keywords"])
 
 
 # Greenhouse. Date: `first_published` (the list endpoint returns it, so no per-job call is needed for the date).
@@ -103,12 +112,13 @@ def list_workday(b, start: datetime, store: RawStore):
     api = f"https://{host}/wday/cxs/{t}/{site}/jobs"
     seen: dict[str, dict] = {}
     cap = 5000 if b.get("full") else 1000
+    facets = facet_query(b) or {}
     for kw in _keywords(b):
         off, total = 0, None
         while True:
             try:
-                res = http_json(api, {"appliedFacets": {}, "limit": 20, "offset": off, "searchText": kw}, timeout=25,
-                                store=store if off == 0 else None, tag=f"workday_{t}_{kw}")
+                res = http_json(api, {"appliedFacets": facets, "limit": 20, "offset": off, "searchText": kw}, timeout=25,
+                                store=store if off == 0 else None, tag=f"workday_{t}_{kw or 'facet'}")
             except NoBoard:
                 if off == 0 and not seen:
                     raise

@@ -348,6 +348,9 @@ def test_analyst_combo_rule(title, ok):
 @pytest.mark.parametrize("title", [
     "Credit Analyst - BMO Asset Management Corp", "Securitization & Capital Call Underwriting Analyst",       # from the 2026-11-16 top 10
     "Credit Analyst", "Credit Risk Analyst", "Loan Analyst", "Underwriting Analyst", "Senior Underwriter",
+    "Credit Portfolio Analyst II",                                                                            # Citi, from the 2026-11-17 board
+    "Commercial Associate – Global Commercial Banking - Dealer Financial Services - (Dallas, Chicago, Houston, Charlotte)",  # BofA, 2026-11-19 board
+    "Commercial Banking Analyst", "Relationship Banking Associate",
 ])
 def test_credit_securitization_and_underwriting_are_wrong_function(title):
     got = title_blocked(title)

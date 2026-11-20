@@ -24,7 +24,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from . import config, markdown
+from . import config, markdown, reviews
 
 TIER_ORDER = {"Apply now": 0, "Strong": 1, "Stretch": 2}
 BOARD_CAP = 30            # Claude gives verdicts for at most this many Board roles (best Python score first)
@@ -72,22 +72,30 @@ def load_verdicts(raw: dict) -> dict[int, dict]:
 def build_rows(board: dict, verdicts: dict[int, dict]) -> dict:
     """Split the verdicts into the four sheets. Returns {"picks", "unconfirmed", "passed", "warnings"}.
 
-    Only the top BOARD_CAP Board roles and the top UNCONFIRMED_CAP Date unconfirmed roles (by Python score) are for Claude to judge.
-    Anything past a cap without a verdict goes to Passed Over as "below cap" with its Python score, with no warning.
+    Roles marked "Previously reviewed: yes" (an earlier verdict, or a Status other than New) go to Passed Over as
+    "reviewed <date> (<verdict>)" / "status <Status>"; they take no verdict and do not count toward the caps.
+    Of the rest, only the top BOARD_CAP Board roles and the top UNCONFIRMED_CAP Date unconfirmed roles (by Python score) are
+    for Claude to judge. Anything past a cap without a verdict goes to Passed Over as "below cap" with its Python score.
     """
     known = {r["id"]: r for r in board["board"] + board["unconfirmed"]}
     warnings: list[str] = []
     for num in verdicts:
         if num not in known:
             warnings.append(f"id {num} is not a Board or Date unconfirmed role in jobs_latest.md; ignored")
-    ranked = lambda roles: sorted(roles, key=lambda r: (-r["score"], r["id"]))      # noqa: E731
+        elif known[num].get("previously_reviewed"):
+            warnings.append(f"id {num} was already reviewed ({known[num]['reviewed_note']}); new verdict ignored")
+    fresh = lambda roles: [r for r in roles if not r.get("previously_reviewed")]     # noqa: E731
+    ranked = lambda roles: sorted(fresh(roles), key=lambda r: (-r["score"], r["id"]))      # noqa: E731
     in_cap = {r["id"] for r in ranked(board["board"])[:BOARD_CAP]} | {r["id"] for r in ranked(board["unconfirmed"])[:UNCONFIRMED_CAP]}
     picks, unconf, passed = [], [], []
 
     def below_cap(r: dict) -> dict:
         return {**r, "reason": f"below cap (Python score {r['score']:g})"}
 
-    for r in board["board"]:
+    for r in board["board"] + board["unconfirmed"]:
+        if r.get("previously_reviewed"):
+            passed.append({**r, "reason": r["reviewed_note"]})
+    for r in fresh(board["board"]):
         v = verdicts.get(r["id"])
         if v is None and r["id"] not in in_cap:
             passed.append(below_cap(r))
@@ -98,7 +106,7 @@ def build_rows(board: dict, verdicts: dict[int, dict]) -> dict:
             passed.append({**r, "reason": v["why"] or v["gap"] or "skipped"})
         else:
             picks.append({**r, "claude_tier": v["verdict"], "why": v["why"], "gap": v["gap"]})
-    for r in board["unconfirmed"]:
+    for r in fresh(board["unconfirmed"]):
         v = verdicts.get(r["id"])
         if v is None and r["id"] not in in_cap:
             passed.append(below_cap(r))
@@ -110,8 +118,9 @@ def build_rows(board: dict, verdicts: dict[int, dict]) -> dict:
                        "why": v["why"], "gap": v["gap"]})
     picks.sort(key=lambda r: (TIER_ORDER[r["claude_tier"]], -r["score"], r["id"]))
     unconf.sort(key=lambda r: (not r["worth"], -r["score"], r["id"]))
-    passed.sort(key=lambda r: (r["reason"].startswith("below cap"), -r["score"], r["id"]))
-    return {"picks": picks, "unconfirmed": unconf, "passed": passed, "warnings": warnings}
+    passed.sort(key=lambda r: (r["reason"].startswith(("below cap", "reviewed ", "status ")), -r["score"], r["id"]))
+    judged = {r["id"]: verdicts[r["id"]] for r in fresh(board["board"] + board["unconfirmed"]) if r["id"] in verdicts}
+    return {"picks": picks, "unconfirmed": unconf, "passed": passed, "warnings": warnings, "judged": judged}
 
 
 def _link(ws, row: int, col: int, url: str) -> None:
@@ -196,7 +205,8 @@ def _save_copy(wb: Workbook, target: Path, now: datetime) -> tuple[Path, bool]:
     return alt, True
 
 
-def write_review(review: dict, md_path: Path | None = None, out_dir: Path | None = None, now: datetime | None = None) -> dict:
+def write_review(review: dict, md_path: Path | None = None, out_dir: Path | None = None, now: datetime | None = None,
+                 state_dir: Path | None = None) -> dict:
     """Build and save the workbook. Returns {"path", "used_copy", "counts", "warnings"}."""
     now = now or datetime.now()
     md_path = md_path or config.output_dir() / "jobs_latest.md"
@@ -205,6 +215,7 @@ def write_review(review: dict, md_path: Path | None = None, out_dir: Path | None
     run_date = (board["header"].get("title") or "").rsplit(" ", 1)[-1] or now.date().isoformat()
     out_dir = out_dir or config.output_dir() / "reviews"
     path, copy = _save(build_workbook(board, parts, md_path, now), out_dir / f"Claude_Review_{run_date}.xlsx", now)
+    reviews.record(parts["judged"], run_date, source=path.name, state_dir=state_dir)   # the next run prints these as reviewed
     return {"path": str(path), "used_copy": copy, "warnings": parts["warnings"],
             "counts": {"picks": len(parts["picks"]), "date_unconfirmed": len(parts["unconfirmed"]), "passed_over": len(parts["passed"])}}
 
@@ -217,9 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("review", type=Path, help="the review JSON ({\"verdicts\": [...]})")
     ap.add_argument("--md", type=Path, help="jobs_latest.md (default: output\\jobs_latest.md)")
     ap.add_argument("--out", type=Path, help="output folder (default: output\\reviews)")
+    ap.add_argument("--state", type=Path, help="state folder for reviews.json (default: state)")
     args = ap.parse_args(argv)
     try:
-        res = write_review(json.loads(args.review.read_text(encoding="utf-8")), args.md, args.out)
+        res = write_review(json.loads(args.review.read_text(encoding="utf-8")), args.md, args.out, state_dir=args.state)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -340,4 +340,4 @@ Phase 1 setup is done. Next, on your go: Phase 0 leftovers (move PDFs to `inputs
 
 ## TODO
 
-- Workday: discover each tenant's Job Category facet ID for Finance once, cache it in companies.yaml, query with that facet instead of 10 keywords. (Workday has no posted-date facet or working sort, so paging cannot stop at the 4-day window; a Finance category facet would cut the number of pages. Workday also rate-limits hard after several full runs in a day.)
+- BUILT 2026-11-19, discovery not yet run: `python -m board workday-facets` caches `workday_facet` in companies.yaml and `list_workday` queries with it. Original note: Workday: discover each tenant's Job Category facet ID for Finance once, cache it in companies.yaml, query with that facet instead of 10 keywords. (Workday has no posted-date facet or working sort, so paging cannot stop at the 4-day window; a Finance category facet would cut the number of pages. Workday also rate-limits hard after several full runs in a day.)

@@ -38,7 +38,8 @@ def parse_board(entry: dict) -> dict:
     if ats == "workday":
         m = re.search(r"//([^./]+)\.wd(\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Za-z]{2}/)?([^/?#]+)", url)
         if m:
-            return {**base, "key": m.group(1), "tenant": m.group(1), "wd": m.group(2), "site": m.group(3)}
+            return {**base, "key": m.group(1), "tenant": m.group(1), "wd": m.group(2), "site": m.group(3),
+                    "facet": entry.get("workday_facet")}         # finance category ids, cached by `python -m board workday-facets`
         return {**base, "ats": "unsupported", "note": f"unreadable Workday url {url}"}
     if ats == "oracle":
         m = re.search(r"//([^/]+)/hcmUI/CandidateExperience/[^/]+/sites/([^/?#]+)", url)

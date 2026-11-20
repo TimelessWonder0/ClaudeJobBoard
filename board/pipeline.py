@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import careerops, classify, config, dates, fetch, funnel, ingest, jd, markdown, score
 from .extract import extract
-from .filters import apply_filters
+from .filters import apply_filters, classify_location, jd_location
 from .fetch.base import RawJob
 from .models import HistoryRow, Job, Reason
 
@@ -146,7 +146,8 @@ def _public(job: Job) -> dict:
         "careerops": job.careerops,
         "track": job.score_parts.get("track", ""), "tier": score.tier_for(job.score or 0), "training": job.score_parts.get("training_phrases", []),
         "date_flag": job.date_flag, "pay": job.pay, "workplace": job.workplace,
-        "requirements": markdown.requirement_lines(job.jd_text), "jd_path": str(job.jd_dir / "JD.md") if job.jd_dir and job.jd_source != "none" else "",
+        "requirements": markdown.requirement_lines(job.jd_text), "eligibility": markdown.eligibility_line(job.title, job.jd_text),
+        "jd_path": str(job.jd_dir / "JD.md") if job.jd_dir and job.jd_source != "none" else "",
     }
 
 
@@ -202,6 +203,13 @@ def phase_a(job: Job, rj: RawJob, refresh: bool, fetch_missing: bool, with_claud
         jd.save_jd(job, rj.description, "api")
     else:
         jd.load_or_fetch(job, refresh=refresh, fetch=fetch_missing)
+    # The listing said only "2 Locations" or "United States": take the cities from the JD's own "Location:" line, so the
+    # metro rule judges the real places (outside every metro is hidden with an ID, as for any other outside location).
+    if classify_location(job.location)[0] == "unknown" and not re.search(r"remote", job.location or "", re.I):
+        found = jd_location(job.jd_text)
+        if found and classify_location(found)[0] != "unknown":
+            job.flags.append(f"location from JD (listing said '{job.location or 'blank'}')")
+            job.location = found
     ext = extract(job.jd_text, job.location)
     job.extraction = ext.to_dict()
     job.company_priority = score.company_priority(job.portal, job.company)

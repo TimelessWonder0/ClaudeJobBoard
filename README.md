@@ -37,7 +37,7 @@ Or double-click `jobboard.cmd`. In Claude Code, open the board with `/jobs`. Cla
 
 | Command | What it does |
 |---|---|
-| `/jobs` | Reads `output\jobs_latest.md` (warns if it is not from today, never scans), gives the top 30 Board and top 10 Date unconfirmed roles a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap, and writes `output\reviews\Claude_Review_<date>.xlsx` through `board/write_review.py`. |
+| `/jobs` | Reads `output\jobs_latest.md` (warns if it is not from today, never scans), skips roles already reviewed or with a Status other than New ("Previously reviewed: yes" in the file), gives the top 30 remaining Board and top 10 remaining Date unconfirmed roles a verdict (Apply now / Strong / Stretch / Skip) with a one-line why and gap, and writes `output\reviews\Claude_Review_<date>.xlsx` through `board/write_review.py`. |
 | `/apply <id>` | Builds the resume and cover letter PDFs for that role, writes `GapCheck.md`, puts the paths in Excel, sets Status = Docs Ready. |
 | `/mark <id> <status>` | Sets Status (New, Interested, Docs Ready, Applied, Interviewing, Rejected, Offer, Skip); Applied also sets Applied Date. |
 

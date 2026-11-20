@@ -596,9 +596,12 @@ def write_outputs(result: dict, now: datetime | None = None, out_dir: Path | Non
     if master_locked:
         notes.append("Close JobBoard_Master.xlsx and run again to update it. Your statuses in it are untouched.")
     ids = {key: rec["id"] for key, rec in ledger.jobs.items()}
+    # First seen and Status per Board row, for jobs_latest.md ("First seen ... · Previously reviewed ..."), so /jobs never reads the xlsx.
+    meta = {r["ID"]: {"first_seen": _to_date(r.get("Date Found")).isoformat() if _to_date(r.get("Date Found")) else "",
+                      "status": str(r.get("Status") or "New")} for r in board_rows}
     return {"snapshot": str(snap), "master": str(master_written), "locked": snap_locked or master_locked,
             "notes": notes, "board": len(board_rows), "hidden": len(hidden_rows), "new": len(new_ids),
-            "ids": ids, "board_nums": [r["ID"] for r in sorted(board_rows, key=rank_key)]}
+            "ids": ids, "board_nums": [r["ID"] for r in sorted(board_rows, key=rank_key)], "meta": meta}
 
 
 # ----------------------------------------------------------------------------------------------

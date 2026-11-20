@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config, dates, score
+from . import config, dates, reviews as reviews_mod, score
 
 _HEADING = re.compile(r"^\W*(?:basic |minimum |required |preferred |key )?(?:qualifications|requirements|what you(?:'|’)?ll need|"
                       r"what we(?:'|’)?re looking for|about you|you have|who you are|skills and experience|experience)\b", re.I)
@@ -58,13 +58,44 @@ def _years(job: dict) -> str:
     return f"{int(y) if float(y).is_integer() else y}"
 
 
-def _role(num: int, job: dict, jd_root: Path | None) -> list[str]:
+_ELIGIBILITY = re.compile(
+    r"[^.\n]*(?:\bclass of\s+20\d\d|graduat\w*[^.\n]{0,60}?\b(?:(?:spring|summer|fall|autumn|winter|jan(?:uary)?|feb(?:ruary)?|"
+    r"march|april|may|june|july|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+)?20\d\d\b|"
+    r"\b20\d\d\s+(?:graduat\w*|grads?)\b)[^.\n]*", re.I)
+_CLASS_TITLE = re.compile(r"\b20\d\d\b[^,()]*\b(?:early career|new grad\w*|graduate|campus|analyst program|program)\b|"
+                          r"\b(?:class of|graduating)\s+20\d\d\b", re.I)
+
+
+def eligibility_line(title: str, jd_text: str, width: int = 220) -> str:
+    """The sentence that ties a posting to a graduating class ("On track to graduate in Spring 2027 ..."), or "" when the
+    JD names none. Only looked for when the title names a dated program or the JD names a class or graduation year."""
+    m = _ELIGIBILITY.search(jd_text or "")
+    if not m and not _CLASS_TITLE.search(title or ""):
+        return ""
+    if not m:
+        return f"title names a dated program ({_CLASS_TITLE.search(title).group(0).strip()}); JD states no graduation window"
+    text = re.sub(r"\s+", " ", m.group(0)).strip(" -*•\t#>")
+    return text if len(text) <= width else text[:width - 1].rstrip() + "…"
+
+
+def _seen_line(num: int, job: dict, meta: dict | None, seen: dict | None) -> str:
+    m = (meta or {}).get(num, {})
+    first = m.get("first_seen") or job.get("first_seen") or "unknown"
+    why = reviews_mod.note(num, seen or {}, m.get("status", ""))
+    return f"- First seen: {first} · Previously reviewed: " + (f"yes ({why})" if why else "no")
+
+
+def _role(num: int, job: dict, jd_root: Path | None, meta: dict | None = None, seen: dict | None = None) -> list[str]:
     tier = score.tier_for(job.get("score") or 0)
     parts = job.get("score_parts") or {}
     posted = job["posted"] if job.get("posted") and not job.get("date_flag") else f"DATE UNCONFIRMED ({job.get('date_flag') or 'no date field'})"
     lines = [f"### [{num}] {job.get('score')} · {tier or 'below 50'} · {job.get('track') or parts.get('track', '')} — {job['title']} — {job['company']}",
              f"- City: {_city(job['location'])} · Work mode: {_work_mode(job)} · Posted: {posted} · Years required: {_years(job)}"
-             f" · Pay: {job.get('pay') or 'not listed'}"]
+             f" · Pay: {job.get('pay') or 'not listed'}",
+             _seen_line(num, job, meta, seen)]
+    elig = job.get("eligibility") or ""
+    if elig:
+        lines.append(f"- Eligibility: {elig}")
     train = job.get("training") or parts.get("training_phrases") or []
     lines.append("- Training: " + ("; ".join(train) if train else "no signal found"))
     reqs = job.get("requirements") or []
@@ -79,8 +110,10 @@ def _role(num: int, job: dict, jd_root: Path | None) -> list[str]:
     return lines
 
 
-def render(result: dict, ids: dict[str, int], board_nums: list[int], generated: datetime | None = None) -> str:
-    """ids: job id -> Excel ID; board_nums: Excel IDs on the Board sheet, in Board order."""
+def render(result: dict, ids: dict[str, int], board_nums: list[int], generated: datetime | None = None,
+           meta: dict | None = None, reviews: dict | None = None) -> str:
+    """ids: job id -> Excel ID; board_nums: Excel IDs on the Board sheet, in Board order.
+    meta: Excel ID -> {"first_seen", "status"} from the master; reviews: Excel ID -> {"date", "verdict"} (board.reviews)."""
     generated = generated or datetime.fromisoformat(result["run_start"])
     chi = generated.astimezone(dates.CHICAGO)
     fetch = result.get("fetch", {})
@@ -105,18 +138,20 @@ def render(result: dict, ids: dict[str, int], board_nums: list[int], generated: 
         f"- Counts: kept {len(confirmed)} · date unconfirmed {len(unconfirmed)} · hidden {len(hidden)} (with an ID) · "
         f"dropped before the JD stage {len(result.get('dropped', [])):,} (see Dropped_{chi.date().isoformat()}.csv)",
         f"- Fetch time: {fetch.get('elapsed_seconds', 0):.0f}s · Score: role fit 35, level 20, skills 15, training 15, future-facing 10, location 5",
+        f"- Previously reviewed: {sum(1 for n, _ in board if reviews_mod.note(n, reviews or {}, (meta or {}).get(n, {}).get('status', '')))} "
+        f"of {len(board)} Board and Date unconfirmed roles (an earlier /jobs verdict, or a Status other than New); /jobs skips them",
         "",
         f"## Board ({len(confirmed)})",
         "",
     ]
     for n, j in confirmed:
-        out += _role(n, j, None) + [""]
+        out += _role(n, j, None, meta, reviews) + [""]
     if not confirmed:
         out += ["No role passed every filter with a confirmed date.", ""]
     out += [f"## Date unconfirmed ({len(unconfirmed)})", "",
             "Passed every other filter; the posting date could not be confirmed. Check it before applying.", ""]
     for n, j in unconfirmed:
-        out += _role(n, j, None) + [""]
+        out += _role(n, j, None, meta, reviews) + [""]
     out += [f"## Hidden ({len(hidden)})", "",
             "One line per hidden role: [ID] title — company — reason. Override by ID in the Hidden sheet of JobBoard_Master.xlsx.", ""]
     for n, j in sorted(hidden, key=lambda x: -(x[1].get("score") or 0)):
@@ -125,11 +160,12 @@ def render(result: dict, ids: dict[str, int], board_nums: list[int], generated: 
     return "\n".join(out) + "\n"
 
 
-def write(result: dict, ids: dict[str, int], board_nums: list[int], out_dir: Path | None = None) -> tuple[Path, Path]:
+def write(result: dict, ids: dict[str, int], board_nums: list[int], out_dir: Path | None = None,
+          meta: dict | None = None, reviews: dict | None = None) -> tuple[Path, Path]:
     """Write jobs_latest.md and the dated copy jobs_<date>.md (atomic). Returns (latest, dated)."""
     out_dir = out_dir or config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-    text = render(result, ids, board_nums)
+    text = render(result, ids, board_nums, meta=meta, reviews=reviews)
     latest, dated = out_dir / "jobs_latest.md", out_dir / f"jobs_{result['run_date']}.md"
     for path in (dated, latest):
         tmp = path.with_suffix(".tmp")
@@ -182,7 +218,8 @@ def parse(text: str) -> dict:
             track, _, title = body.partition(" — ")
             role = {"id": int(m.group(1)), "score": float(m.group(2)), "tier": m.group(3), "track": track, "title": title,
                     "company": company, "city": "", "work_mode": "", "posted": "", "date_flag": "", "years": "", "pay": "",
-                    "training": "", "requirements": [], "flags": "", "link": "", "jd_path": ""}
+                    "training": "", "requirements": [], "flags": "", "link": "", "jd_path": "",
+                    "first_seen": "", "previously_reviewed": False, "reviewed_note": "", "eligibility": ""}
             out[section].append(role)
             continue
         if role is None:
@@ -202,6 +239,13 @@ def parse(text: str) -> dict:
                     role["years"] = val
                 elif key == "pay":
                     role["pay"] = val
+        elif line.startswith("- First seen: "):
+            first, _, prev = line[len("- First seen: "):].partition(" · Previously reviewed: ")
+            role["first_seen"] = first.strip()
+            pm = re.match(r"^yes(?: \((.*)\))?$", prev.strip())
+            role["previously_reviewed"], role["reviewed_note"] = (True, pm.group(1) or "reviewed") if pm else (False, "")
+        elif line.startswith("- Eligibility: "):
+            role["eligibility"] = line[len("- Eligibility: "):]
         elif line.startswith("- Training: "):
             role["training"] = line[len("- Training: "):]
         elif line.startswith("  > "):

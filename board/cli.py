@@ -37,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     fe.add_argument("--no-detail", action="store_true", help="skip per-job detail calls (list data only)")
     fe.add_argument("--state", type=Path, help="state directory (default: state)")
     fe.add_argument("--history", type=Path, help="scan-history.tsv for the scan.mjs providers")
+    wf = sub.add_parser("workday-facets", help="one-time, paced: find each Workday tenant's Finance category facet and cache it in companies.yaml")
+    wf.add_argument("--only", nargs="*", help="company names (rediscovers them even when cached)")
+    wf.add_argument("--refresh", action="store_true", help="rediscover tenants that already have a cached facet")
+    wf.add_argument("--delay", type=float, default=4.0, help="seconds between tenants (default 4)")
+    wf.add_argument("--dry-run", action="store_true", help="print what would be cached; change nothing")
     tb = sub.add_parser("table", help="print row, company, title, kept/hidden, reason for a run")
     tb.add_argument("--ids", default="", help="Excel IDs, e.g. 1-17 or 1,5,8")
     tb.add_argument("--date", help="run date (YYYY-MM-DD), default latest")
@@ -60,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         return _fetch(args)
     if args.cmd == "table":
         return _table(args)
+    if args.cmd == "workday-facets":
+        return _workday_facets(args)
     if args.cmd == "mark":
         return _mark(args)
     if args.cmd == "apply":
@@ -92,7 +99,9 @@ def _run(args) -> int:
             print(f"error: could not write the workbook: {exc}", file=sys.stderr)
             return 3
         _write_last_run(result, out, args.state)
-    latest, dated = markdown.write(result, out["ids"], out["board_nums"], out_dir=args.out)
+    from . import reviews
+    seen = reviews.load(args.state, (args.out or config.output_dir()) / "reviews")
+    latest, dated = markdown.write(result, out["ids"], out["board_nums"], out_dir=args.out, meta=out.get("meta"), reviews=seen)
     log_dir = config.ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / f"board_{result['run_date']}.log").write_text(
@@ -203,6 +212,18 @@ def _table(args) -> int:
     for num, company, title, verdict, co, reason in rows:
         print(f"{num:>3}  {company[:16]:<16} {title[:50]:<50} {verdict:<6} {'-' if co is None else format(co, 'g'):>6}  {reason}")
     return 0
+
+
+def _workday_facets(args) -> int:
+    from . import config, dates
+    from .fetch import workday_facets
+
+    raw_dir = config.ROOT / "logs" / "raw" / dates.chicago_date(dates.run_start()).isoformat() / "workday_facets"
+    res = workday_facets.run(only=set(args.only) if args.only else None, refresh=args.refresh, delay=args.delay,
+                             dry_run=args.dry_run, raw_dir=raw_dir)
+    for name, why in res["failed"]:
+        print(f"  FAILED {name}: {why}")
+    return 0 if res["found"] or not res["failed"] else 2
 
 
 def _fetch(args) -> int:

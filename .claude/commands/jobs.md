@@ -18,10 +18,15 @@ Mention in one line any failed or partial boards from the header, because roles 
 
 ## 2. Give every role a verdict
 
-The file lists roles best Python score first. Judge **only the first 30 roles under Board and the first 10 under Date
-unconfirmed**. Do not reason about, or write verdicts for, anything past those caps: `board/write_review.py` lists them
-in Passed Over as "below cap" with their Python score. Say in your report how many roles were below the cap. For each of
-the roles inside the caps decide:
+Each role has a line `- First seen: <date> · Previously reviewed: yes (...) | no`, written by Python from earlier review
+workbooks and the master's Status column. **Skip every role marked `Previously reviewed: yes`**: give it no verdict and no
+reasoning. `board/write_review.py` lists it in Passed Over as "reviewed <date> (<verdict>)" or "status <Status>". Say in
+your report how many roles were skipped this way.
+
+The file lists roles best Python score first. Of the roles marked `Previously reviewed: no`, judge **only the first 30 under
+Board and the first 10 under Date unconfirmed**. Do not reason about, or write verdicts for, anything past those caps:
+`board/write_review.py` lists them in Passed Over as "below cap" with their Python score. Say in your report how many roles
+were below the cap. For each of the roles inside the caps decide:
 
 - **Apply now**: strong match on level, function and years; worth building materials today.
 - **Strong**: good match with a gap that can be closed in the cover letter.
@@ -40,6 +45,11 @@ For each role write exactly two short lines:
 - **gap**: one line naming the biggest requirement I do not clearly meet, quoted or paraphrased from the role's lines, or
   "None obvious". Examples: "SaaS metrics ownership", "4 yrs required, I have 1.5", "CFA preferred".
 
+**Graduating class.** When a role has an `- Eligibility:` line, or its title or JD names a graduating class or a dated
+program ("2027 Early Career", "Class of 2026", "on track to graduate in Spring 2027"), the gap line must state that
+eligibility requirement against my Dec 2024 graduation, e.g. "Requires graduating Spring 2027; I graduated Dec 2024". If it
+excludes me, the verdict is Skip with that as the reason.
+
 Things to weigh: a "Senior" title is allowed but reaching; the Training line shows a rotational, development or mentoring
 signal (good for someone moving out of estimating); Date unconfirmed roles need their posting date checked before applying,
 so say in the gap line if the date is the main risk. For Date unconfirmed roles, anything other than Skip means "worth
@@ -57,8 +67,9 @@ Write the verdicts as JSON to `C:\ClaudeJobBoard\state\review_input.json` (use t
 ```
 
 `id` is the number in square brackets in the file (the same ID as `JobBoard_Master.xlsx`). `verdict` is one of Apply now,
-Strong, Stretch, Skip. Include every role inside the caps (30 Board, 10 Date unconfirmed); a role inside the caps without a
-verdict is listed under Passed Over with a warning, and a role past the caps needs none.
+Strong, Stretch, Skip. Include every role inside the caps (30 Board, 10 Date unconfirmed, previously reviewed roles not
+counted); a role inside the caps without a verdict is listed under Passed Over with a warning, and a role past the caps or
+previously reviewed needs none (a verdict for a previously reviewed role is ignored with a warning).
 
 Then run:
 
@@ -68,7 +79,8 @@ python -m board.write_review state\review_input.json
 
 Write the review workbook with `board/write_review.py` and tell me the path. It creates
 `output\reviews\Claude_Review_<run date>.xlsx` with the sheets Picks (best first), Date Unconfirmed, Passed Over and Run
-Info. It never writes to `JobBoard_Master.xlsx`. If today's review file already exists or is open in Excel it saves a copy with
+Info. It also records the verdicts in `state\reviews.json`, so the next run marks these roles as previously reviewed. It
+never writes to `JobBoard_Master.xlsx`. If today's review file already exists or is open in Excel it saves a copy with
 a time suffix and says so; pass that on.
 
 ## 4. Report

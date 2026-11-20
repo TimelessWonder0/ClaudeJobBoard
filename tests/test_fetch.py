@@ -225,6 +225,9 @@ def test_fetch_all_runs_in_parallel_and_saves(monkeypatch, tmp_path):
     ("Asset Management - Everyday 401K Internal Client Advisor - Associate", "JPMorgan Chase", "sales like"),      # from the 2026-11-15 smoke run
     ("Asset Management - Internal Client Advisor - Retirement Plan Specialist - Associate", "JPMorgan Chase", "sales like"),
     ("Credit Underwriter I/Credit Officer I-Technology", "Bank of America", "wrong function"),      # from the 2026-11-15 trial run
+    ("Commercial Associate – Global Commercial Banking - Dealer Financial Services - (Dallas, Chicago, Houston, Charlotte)",
+     "Bank of America", "wrong function"),                                                          # from the 2026-11-19 board
+    ("Credit Portfolio Analyst II", "Citi", "wrong function"),                                      # from the 2026-11-17 board
     ("Cost Estimator", "Acme", "moves backward"),
     ("Tax Analyst", "Acme", "wrong function"),
     ("Financial Analyst", "Robert Half", "staffing"),

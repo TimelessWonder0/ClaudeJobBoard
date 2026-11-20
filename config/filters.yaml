@@ -162,6 +162,11 @@ fetch:
   keywords: [finance, financial analyst, FP&A, pricing, treasury, corporate development, investor relations, equity research, investment, strategic finance]
   # Workday searches page 20 at a time through a shared limit, so its list is narrower: no bare "finance" or "investment".
   workday_keywords: [financial analyst, FP&A, FP&A analyst, financial planning, pricing, treasury, corporate development, investor relations, equity research, strategic finance]
+  # Workday Finance facet (python -m board workday-facets caches the ids in companies.yaml as workday_facet). A tenant with a
+  # finance category is queried with that facet and no search text; a tenant with none uses the short fallback list below.
+  workday_facet_pattern: 'financ|treasur|fp&a|corporate development|investor relations|equity research|capital markets|investment banking|pricing'
+  workday_facet_exclude: 'crime|advis|sales|insurance|non-financial|financial (?:center|services|technology|risk|reporting)|branch|client facing|inactive|actuarial'
+  workday_fallback_keywords: [financial analyst, FP&A, treasury, pricing]
 
 # Staffing agencies and recruiter reposts. Matched against the company name; the JD phrases against the description.
 staffing_agencies: [Robert Half, Insight Global, TEKsystems, Randstad, Kforce, Aerotek, Apex Systems, Beacon Hill, Hays, Michael Page, Vaco,
@@ -175,7 +180,8 @@ staffing_jd_patterns:
   - 'W-?2 contract'
   - '\d+[- ]month contract'
 
-# Wrong function: accounting, tax, audit, AP/AR, payroll, AML / financial crimes, insurance. Controller, credit and wealth roles are not listed here.
+# Wrong function: accounting, tax, audit, AP/AR, payroll, AML / financial crimes, insurance, credit / underwriting, commercial banking.
+# Controller and wealth roles are not listed here.
 wrong_function_title_patterns:
   - '\baccounting\b'
   - '\baccountant\b'
@@ -189,6 +195,8 @@ wrong_function_title_patterns:
   - '\binsurance\b'
   - 'credit analyst|credit risk|credit officer|credit underwrit|loan analyst|loan underwrit'
   - 'securitization|\bunderwrit'                       # underwriting of any kind
+  - 'credit portfolio'                                 # credit reviews and limit monitoring (Citi "Credit Portfolio Analyst II", 2026-11-17)
+  - 'commercial banking|commercial associate|relationship banking'   # client credit coverage (BofA "Commercial Associate", 2026-11-19)
 
 # Moves backward: estimating, proposal pricing, cost/price analysis on government contracts, EVM / program control.
 moves_backward_title_patterns:

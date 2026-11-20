@@ -40,6 +40,22 @@ def classify_location(location: str, cfg: dict | None = None) -> tuple[str, str,
     return "outside", "", []
 
 
+_JD_LOCATION = re.compile(r"^\s*(?:-\s+)?(?:job\s+|work\s+)?locations?\s*(?::|--|–)\s*(\S.{1,300})$", re.I)
+
+
+def jd_location(jd_text: str, max_lines: int = 40) -> str:
+    """The city list a JD states near its top ("Location: San Jose, California, US | RTP, North Carolina, US"), joined with
+    "; ", or "" when there is none. Used when the listing only said "2 Locations" or "United States"."""
+    for line in (jd_text or "").splitlines()[:max_lines]:
+        m = _JD_LOCATION.match(line)
+        if m:
+            parts = [p.strip() for p in re.split(r"\s*[|;·]\s*", m.group(1)) if p.strip()]
+            text = "; ".join(parts)
+            if text and not re.match(r"^\d+ locations?$", text, re.I):
+                return text
+    return ""
+
+
 # ----------------------------------------------------------------------------------------------
 # titles
 # ----------------------------------------------------------------------------------------------
@@ -78,7 +94,7 @@ def title_blocked(title: str, cfg: dict | None = None) -> tuple[str, str] | None
     cfg = cfg or config.filters_config()
     for key, rule, label in (("sales_like_title_patterns", "sales_like", "Sales-like title"),
                              ("moves_backward_title_patterns", "moves_backward", "Moves backward (estimating / proposal pricing / EVM)"),
-                             ("wrong_function_title_patterns", "wrong_function", "Wrong function (accounting, tax, audit, AP/AR, payroll, AML, insurance, credit, underwriting)")):
+                             ("wrong_function_title_patterns", "wrong_function", "Wrong function (accounting, tax, audit, AP/AR, payroll, AML, insurance, credit, underwriting, commercial banking)")):
         for rx in _compile(cfg.get(key, [])):
             m = rx.search(title or "")
             if m:
