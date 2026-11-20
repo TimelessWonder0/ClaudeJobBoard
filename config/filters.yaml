@@ -163,7 +163,8 @@ fetch:
   # Workday searches page 20 at a time through a shared limit, so its list is narrower: no bare "finance" or "investment".
   workday_keywords: [financial analyst, FP&A, FP&A analyst, financial planning, pricing, treasury, corporate development, investor relations, equity research, strategic finance]
   # Workday Finance facet (python -m board workday-facets caches the ids in companies.yaml as workday_facet). A tenant with a
-  # finance category is queried with that facet and no search text; a tenant with none uses the short fallback list below.
+  # finance category is queried with that facet and no search text AND with the short fallback list below (no facet), merged
+  # by job id; a tenant with none uses the fallback list only.
   workday_facet_pattern: 'financ|treasur|fp&a|corporate development|investor relations|equity research|capital markets|investment banking|pricing'
   workday_facet_exclude: 'crime|advis|sales|insurance|non-financial|financial (?:center|services|technology|risk|reporting)|branch|client facing|inactive|actuarial'
   workday_fallback_keywords: [financial analyst, FP&A, treasury, pricing]

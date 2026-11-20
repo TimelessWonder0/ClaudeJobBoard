@@ -102,19 +102,40 @@ def test_write_cache_edits_only_the_named_lines_and_replaces_an_old_value(tmp_pa
     assert boards.parse_board(data["PNC"])["facet"]["param"] == "jobFamilyGroup"
 
 
-def test_list_workday_queries_with_the_facet_and_no_search_text(monkeypatch):
+def _workday_fake(monkeypatch, by_query):
+    """by_query: searchText -> list of externalPaths returned. Records every body sent."""
     sent = []
 
     def fake(url, data=None, **kw):
         sent.append(data)
-        return {"total": 1, "jobPostings": [{"title": "Financial Analyst", "externalPath": "/job/a", "locationsText": "San Jose, CA",
-                                             "postedOn": "Posted Today"}]}
+        paths = by_query.get(data["searchText"], [])
+        return {"total": len(paths), "jobPostings": [{"title": "Financial Analyst", "externalPath": p, "locationsText": "San Jose, CA",
+                                                      "postedOn": "Posted Today"} for p in paths]}
 
     monkeypatch.setattr(ats, "http_json", fake)
+    return sent
+
+
+def test_a_facet_tenant_runs_the_facet_query_and_the_fallback_keywords_deduped(monkeypatch):
+    from board import config
+    fallback = config.filters_config()["fetch"]["workday_fallback_keywords"]
+    # the facet finds /a and /b; "financial analyst" finds /b again plus /c, filed under another category (Cisco-style)
+    sent = _workday_fake(monkeypatch, {"": ["/job/a", "/job/b"], fallback[0]: ["/job/b", "/job/c"]})
     b = {"name": "W", "ats": "workday", "tenant": "w", "wd": "5", "site": "ext",
          "facet": {"param": "jobFamilyGroup", "ids": ["fin1"], "names": ["Finance"]}}
+    raw, jobs = ats.list_workday(b, START, base.RawStore(None))
+    assert sent[0] == {"appliedFacets": {"jobFamilyGroup": ["fin1"]}, "limit": 20, "offset": 0, "searchText": ""}
+    assert [(d["appliedFacets"], d["searchText"]) for d in sent[1:]] == [({}, kw) for kw in fallback]   # keywords without the facet
+    assert raw == 3 and sorted(j.ext_id for j in jobs) == ["/job/a", "/job/b", "/job/c"]
+
+
+def test_a_tenant_without_a_finance_facet_runs_keywords_only(monkeypatch):
+    from board import config
+    fallback = config.filters_config()["fetch"]["workday_fallback_keywords"]
+    sent = _workday_fake(monkeypatch, {})
+    b = {"name": "W", "ats": "workday", "tenant": "w", "wd": "5", "site": "ext", "facet": {"param": "none"}}
     ats.list_workday(b, START, base.RawStore(None))
-    assert sent == [{"appliedFacets": {"jobFamilyGroup": ["fin1"]}, "limit": 20, "offset": 0, "searchText": ""}]
+    assert [(d["appliedFacets"], d["searchText"]) for d in sent] == [({}, kw) for kw in fallback]
 
 
 def test_workday_keywords_without_a_facet():
@@ -123,6 +144,9 @@ def test_workday_keywords_without_a_facet():
     wd = {"ats": "workday"}
     assert ats._keywords(wd) == fcfg["workday_keywords"]                                          # never discovered: unchanged
     assert ats._keywords({**wd, "facet": {"param": "none"}}) == fcfg["workday_fallback_keywords"]  # no finance category: short list
+    with_facet = {**wd, "facet": {"param": "jobFamilyGroup", "ids": ["x"]}}
+    assert ats._workday_queries(with_facet) == [({"jobFamilyGroup": ["x"]}, "")] + [({}, k) for k in fcfg["workday_fallback_keywords"]]
+    assert ats._workday_queries(wd) == [({}, k) for k in fcfg["workday_keywords"]]
     assert len(fcfg["workday_fallback_keywords"]) < len(fcfg["workday_keywords"])
     assert ats._keywords({**wd, "full": True, "facet": {"param": "jobFamilyGroup", "ids": ["x"]}}) == [""]
     assert workday_facets.facet_query({**wd, "full": True, "facet": {"param": "jobFamilyGroup", "ids": ["x"]}}) is None
@@ -258,3 +282,50 @@ def test_below_cap_rows_in_an_old_workbook_are_not_reviews(tmp_path):
 ])
 def test_eligibility_line(title, jd, expect):
     assert markdown.eligibility_line(title, jd) == expect
+
+
+# ---- graduating class: seasons, for the flag text only ----------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expect", [
+    ("On track to graduate in Spring 2027 with a degree in Finance", ("Spring 2027", 2027, 5)),
+    ("Graduating Fall 2026", ("Fall 2026", 2026, 12)),
+    ("Fall '26 graduates welcome", ("Fall 2026", 2026, 12)),
+    ("Summer 2027 graduation", ("Summer 2027", 2027, 8)),
+    ("Open to the Class of 2027", ("Class of 2027", 2027, 5)),
+    ("2026 graduates only", ("Class of 2026", 2026, 5)),
+    ("Expected graduation in December 2026", ("December 2026", 2026, 12)),
+    ("Capital Markets Specialist I (2027 Early Career Program)", ("Class of 2027 (from the title)", 2027, 5)),
+    ("Founded in 2020, our team has grown.", None),
+    ("Investment Banking - 2027 ReEntry Program", None),                        # a dated program that is not a graduating class
+])
+def test_parse_grad_class(text, expect):
+    assert markdown.parse_grad_class(text) == expect
+
+
+GRADS = [("MS expected Jun 2028", 2028, 6, True), ("BS Dec 2024", 2024, 12, False)]
+
+
+@pytest.mark.parametrize("title,jd,expect", [
+    ("Capital Markets Specialist I (2027 Early Career Program)", "x\n On track to graduate in Spring 2027 with a degree in Finance\n",
+     "Spring 2027 — likely ineligible (MS expected Jun 2028; BS Dec 2024)"),                              # Affirm, 2026-11-19
+    ("Analyst", "Candidates graduating in Fall 2024 are welcome.", "Fall 2024 — possible fit: close to BS Dec 2024"),
+    ("New Grad Analyst", "Expected graduation: Spring 2028.",
+     "Spring 2028 — possible fit: close to MS expected Jun 2028 (degree in progress; check the program takes it)"),
+    ("Financial Analyst", "Bachelor's degree required.", ""),
+])
+def test_grad_class_line_compares_with_the_candidate(title, jd, expect):
+    assert markdown.grad_class_line(title, jd, GRADS) == expect
+
+
+def test_candidate_graduations_come_from_candidate_yaml():
+    labels = [g[0] for g in markdown.candidate_graduations()]
+    assert "BS Dec 2024" in labels and any(l.startswith("MS") and "2028" in l for l in labels)
+
+
+def test_grad_class_never_hides_a_role(board):
+    t, res, out = board
+    job = res["shown"][0]
+    job["grad_class"] = "Spring 2027 — likely ineligible (MS expected Jun 2028; BS Dec 2024)"
+    _, parsed = _md(t, res, out, {})
+    r = next(r for r in parsed["board"] + parsed["unconfirmed"] if r["title"] == job["title"])
+    assert r["grad_class"].startswith("Spring 2027 — likely ineligible") and not job["reasons"]

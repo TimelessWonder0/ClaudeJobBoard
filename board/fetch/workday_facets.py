@@ -7,9 +7,9 @@ The ids that name a finance category are stored on the company's line in compani
     workday_facet: {param: jobFamilyGroup, ids: [0c40f6bd1d...], names: [Finance], jobs: 14, as_of: '2026-11-20'}
     workday_facet: {param: none, as_of: '2026-11-20'}          # the tenant has no finance category
 
-`list_workday` then queries with that facet and an empty search (one paged query instead of ten keyword queries). A
-tenant with `param: none` is searched with the short `fetch.workday_fallback_keywords`; a tenant never discovered keeps
-the full `fetch.workday_keywords`.
+`list_workday` then runs the facet query (empty search) plus the short `fetch.workday_fallback_keywords` without the
+facet, merged by job id, so finance roles filed under another category are still found. A tenant with `param: none` gets
+the fallback keywords only; a tenant never discovered keeps the full `fetch.workday_keywords`.
 
 Discovery is one request per tenant, sequential, with a pause between tenants (`--delay`). It is meant to be run once by
 hand, not by `jobboard`:

@@ -21,19 +21,25 @@ def _q(s: str) -> str:
 
 def _keywords(b) -> list[str]:
     """Server-side search queries (fetch.keywords in filters.yaml); results are merged and deduped by job id.
-    `full` (python -m board run --full) pulls everything with an empty query, for testing. A Workday tenant with a cached
-    finance facet is queried once with an empty search; one whose discovery found no finance category uses the short
-    fetch.workday_fallback_keywords."""
+    `full` (python -m board run --full) pulls everything with an empty query, for testing. For Workday these are the
+    keyword queries only; `_workday_queries` adds the Finance facet query in front of them."""
     if b.get("full"):
         return [""]
     fetch_cfg = config.filters_config()["fetch"]
     if b.get("ats") != "workday":
         return list(fetch_cfg["keywords"])
-    if facet_query(b):
-        return [""]
-    if (b.get("facet") or {}).get("param") == "none":
+    if b.get("facet"):                               # discovered (with or without a finance category): the short list
         return list(fetch_cfg["workday_fallback_keywords"])
-    return list(fetch_cfg["workday_keywords"])
+    return list(fetch_cfg["workday_keywords"])       # never discovered: the full list
+
+
+def _workday_queries(b) -> list[tuple[dict, str]]:
+    """(appliedFacets, searchText) per Workday query. A tenant with a cached Finance facet gets the facet query (empty
+    search) AND the fallback keywords with no facet, so finance roles filed under another category (Cisco "Business
+    Development & Strategy") are still found; results are merged by job id. Other tenants get keywords only."""
+    facets = facet_query(b)
+    keyword_queries = [({}, kw) for kw in _keywords(b)]
+    return ([(facets, "")] if facets else []) + keyword_queries
 
 
 # Greenhouse. Date: `first_published` (the list endpoint returns it, so no per-job call is needed for the date).
@@ -105,15 +111,14 @@ def list_ashby(b, start: datetime, store: RawStore):
 
 
 # Workday. Date: `postedOn` ("Posted Today" / "Posted 3 Days Ago" / "Posted 30+ Days Ago") turned into a date.
-# Searches are keyword based (the endpoint pages 20 at a time) and merged by `externalPath`.
+# Searches (the cached Finance facet, then keywords; see _workday_queries) page 20 at a time and are merged by `externalPath`.
 def list_workday(b, start: datetime, store: RawStore):
     t, n, site = b["tenant"], b["wd"], b["site"]
     host = f"{t}.wd{n}.myworkdayjobs.com"
     api = f"https://{host}/wday/cxs/{t}/{site}/jobs"
     seen: dict[str, dict] = {}
     cap = 5000 if b.get("full") else 1000
-    facets = facet_query(b) or {}
-    for kw in _keywords(b):
+    for facets, kw in _workday_queries(b):
         off, total = 0, None
         while True:
             try:

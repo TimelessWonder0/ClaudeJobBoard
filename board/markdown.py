@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import config, dates, reviews as reviews_mod, score
@@ -78,6 +78,70 @@ def eligibility_line(title: str, jd_text: str, width: int = 220) -> str:
     return text if len(text) <= width else text[:width - 1].rstrip() + "…"
 
 
+# Graduating class, for the "Grad class:" line only (no filter reads it). A season maps to the month its classes usually finish.
+_SEASON_MONTH = {"spring": 5, "summer": 8, "fall": 12, "autumn": 12, "winter": 12}
+_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+_G_SEASON = re.compile(r"\b(spring|summer|fall|autumn|winter)\s*(?:of\s+|')?(20\d\d|\d\d)\b", re.I)
+_G_MONTH = re.compile(r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+                      r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(?:\d{1,2},?\s+)?(20\d\d)\b", re.I)
+_G_CLASS = re.compile(r"\bclass\s+of\s+(20\d\d)\b|\b(20\d\d)\s+(?:graduat\w*|grads?)\b", re.I)
+_G_PROGRAM_YEAR = re.compile(r"\b(20\d\d)\b[^,()]*\b(?:early career|new grad\w*|graduate|campus|analyst program)\b", re.I)
+
+
+def parse_grad_class(text: str) -> tuple[str, int, int] | None:
+    """("Spring 2027", 2027, 5) from "on track to graduate in Spring 2027", "Fall '26", "May 2027", "Class of 2027" or a
+    dated program title ("2027 Early Career Program"); None when the text names no graduating class."""
+    s = text or ""
+    m = _G_SEASON.search(s)
+    if m:
+        year = int(m.group(2)) if len(m.group(2)) == 4 else 2000 + int(m.group(2))
+        return f"{m.group(1).title()} {year}", year, _SEASON_MONTH[m.group(1).lower()]
+    m = _G_MONTH.search(s) if re.search(r"graduat", s, re.I) else None
+    if m:
+        month = _MONTHS.index(m.group(1).lower()[:3]) + 1
+        return f"{_MONTH_NAMES[month - 1]} {m.group(2)}", int(m.group(2)), month
+    m = _G_CLASS.search(s)
+    if m:
+        year = int(m.group(1) or m.group(2))
+        return f"Class of {year}", year, 5
+    m = _G_PROGRAM_YEAR.search(s)
+    if m:
+        return f"Class of {m.group(1)} (from the title)", int(m.group(1)), 5
+    return None
+
+
+def candidate_graduations() -> list[tuple[str, int, int, bool]]:
+    """(label, year, month, in_progress) per degree in config/candidate.yaml, e.g. ("BS Dec 2024", 2024, 12, False)."""
+    out = []
+    for edu in config.load_yaml("candidate.yaml").get("education", []):
+        m = re.search(r"-\s*([A-Za-z]+)\s+(20\d\d)\s*$", str(edu.get("dates", "")))
+        if not m or m.group(1).lower()[:3] not in _MONTHS:
+            continue
+        month, year = _MONTHS.index(m.group(1).lower()[:3]) + 1, int(m.group(2))
+        kind = re.search(r"\((\w+)\)", str(edu.get("degree", "")))
+        in_progress = date(year, month, 1) > date.today()
+        label = f"{kind.group(1) if kind else edu.get('degree', '')} {'expected ' if in_progress else ''}{_MONTHS[month - 1].title()} {year}"
+        out.append((label, year, month, in_progress))
+    return out
+
+
+def grad_class_line(title: str, jd_text: str, grads: list[tuple[str, int, int, bool]] | None = None, window_months: int = 6) -> str:
+    """"Spring 2027 — likely ineligible (BS Dec 2024; MS expected Jun 2028)", or "" when the posting names no class.
+    A class within `window_months` of one of the candidate's graduations is a possible fit; /jobs makes the call."""
+    found = parse_grad_class(eligibility_line("", jd_text)) or parse_grad_class(title)
+    if not found:
+        return ""
+    label, year, month = found
+    grads = candidate_graduations() if grads is None else grads
+    mine = "; ".join(g[0] for g in grads)
+    near = [g for g in grads if abs((year * 12 + month) - (g[1] * 12 + g[2])) <= window_months]
+    if not near:
+        return f"{label} — likely ineligible ({mine})"
+    g = near[0]
+    return f"{label} — possible fit: close to {g[0]}" + (" (degree in progress; check the program takes it)" if g[3] else "")
+
+
 def _seen_line(num: int, job: dict, meta: dict | None, seen: dict | None) -> str:
     m = (meta or {}).get(num, {})
     first = m.get("first_seen") or job.get("first_seen") or "unknown"
@@ -96,6 +160,8 @@ def _role(num: int, job: dict, jd_root: Path | None, meta: dict | None = None, s
     elig = job.get("eligibility") or ""
     if elig:
         lines.append(f"- Eligibility: {elig}")
+    if job.get("grad_class"):
+        lines.append(f"- Grad class: {job['grad_class']}")
     train = job.get("training") or parts.get("training_phrases") or []
     lines.append("- Training: " + ("; ".join(train) if train else "no signal found"))
     reqs = job.get("requirements") or []
@@ -219,7 +285,7 @@ def parse(text: str) -> dict:
             role = {"id": int(m.group(1)), "score": float(m.group(2)), "tier": m.group(3), "track": track, "title": title,
                     "company": company, "city": "", "work_mode": "", "posted": "", "date_flag": "", "years": "", "pay": "",
                     "training": "", "requirements": [], "flags": "", "link": "", "jd_path": "",
-                    "first_seen": "", "previously_reviewed": False, "reviewed_note": "", "eligibility": ""}
+                    "first_seen": "", "previously_reviewed": False, "reviewed_note": "", "eligibility": "", "grad_class": ""}
             out[section].append(role)
             continue
         if role is None:
@@ -246,6 +312,8 @@ def parse(text: str) -> dict:
             role["previously_reviewed"], role["reviewed_note"] = (True, pm.group(1) or "reviewed") if pm else (False, "")
         elif line.startswith("- Eligibility: "):
             role["eligibility"] = line[len("- Eligibility: "):]
+        elif line.startswith("- Grad class: "):
+            role["grad_class"] = line[len("- Grad class: "):]
         elif line.startswith("- Training: "):
             role["training"] = line[len("- Training: "):]
         elif line.startswith("  > "):

@@ -147,6 +147,7 @@ def _public(job: Job) -> dict:
         "track": job.score_parts.get("track", ""), "tier": score.tier_for(job.score or 0), "training": job.score_parts.get("training_phrases", []),
         "date_flag": job.date_flag, "pay": job.pay, "workplace": job.workplace,
         "requirements": markdown.requirement_lines(job.jd_text), "eligibility": markdown.eligibility_line(job.title, job.jd_text),
+        "grad_class": markdown.grad_class_line(job.title, job.jd_text),
         "jd_path": str(job.jd_dir / "JD.md") if job.jd_dir and job.jd_source != "none" else "",
     }
 

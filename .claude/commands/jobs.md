@@ -45,10 +45,11 @@ For each role write exactly two short lines:
 - **gap**: one line naming the biggest requirement I do not clearly meet, quoted or paraphrased from the role's lines, or
   "None obvious". Examples: "SaaS metrics ownership", "4 yrs required, I have 1.5", "CFA preferred".
 
-**Graduating class.** When a role has an `- Eligibility:` line, or its title or JD names a graduating class or a dated
-program ("2027 Early Career", "Class of 2026", "on track to graduate in Spring 2027"), the gap line must state that
-eligibility requirement against my Dec 2024 graduation, e.g. "Requires graduating Spring 2027; I graduated Dec 2024". If it
-excludes me, the verdict is Skip with that as the reason.
+**Graduating class.** When a role has an `- Eligibility:` or `- Grad class:` line, or its title or JD names a graduating
+class or a dated program ("2027 Early Career", "Class of 2026", "on track to graduate in Spring 2027"), the gap line must
+state that eligibility requirement against my graduations, e.g. "Requires graduating Spring 2027; I graduated Dec 2024".
+The `Grad class:` line is Python's comparison with `config\candidate.yaml` ("likely ineligible" or "possible fit"); it is a
+hint, not a filter. You make the call: if the class excludes me, the verdict is Skip with that as the reason.
 
 Things to weigh: a "Senior" title is allowed but reaching; the Training line shows a rotational, development or mentoring
 signal (good for someone moving out of estimating); Date unconfirmed roles need their posting date checked before applying,

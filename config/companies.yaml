@@ -116,7 +116,7 @@ companies:
   - {name: First Hawaiian Bank, category: Regional, metros: [Honolulu], priority: 3, careers_url: "https://www.fhb.com/en/careers", ats_hint: "Verify", hint_status: verify, ats: "unknown", scan_status: "not scannable"}
   - {name: Royal Caribbean, category: Regional, metros: [Miami], priority: 3, careers_url: "https://www.royalcaribbeangroup.com/careers", ats_hint: "Verify", hint_status: verify, ats: "unknown", scan_status: "not scannable"}
 
-  # ---- Universe added 2026-11-10 (scout/universe.txt). scan_status OK = endpoint answered with jobs when probed ----
+  # ---- Universe added 2026-11-10 (universe list archived in C:/ClaudeJobBoard_archive/scout_2026-11-19.zip). scan_status OK = endpoint answered with jobs when probed ----
   # ---- Global and bulge-bracket banks ----
   - {name: Barclays, category: Global and bulge-bracket banks, metros: [], priority: 3, careers_url: null, ats_hint: no public endpoint found by probe, hint_status: unresolved, ats: unknown, scan_status: not scannable}
   - {name: Deutsche Bank, category: Global and bulge-bracket banks, metros: [], priority: 3, careers_url: null, ats_hint: no public endpoint found by probe, hint_status: unresolved, ats: unknown, scan_status: not scannable}
